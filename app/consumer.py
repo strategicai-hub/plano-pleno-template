@@ -8,11 +8,14 @@ import logging
 import re
 import time
 from contextvars import ContextVar
+from datetime import datetime
 
 import redis as redis_sync
 
+from app import db
 from app.config import settings
 from app.images import MEDIA_DICT
+from app.services import calendar as calendar_facade
 from app.services import redis_service as rds
 from app.services import uazapi
 from app.services.gemini import chat as gemini_chat, transcribe_audio, analyze_image, generate_summary
@@ -107,14 +110,16 @@ def _is_group(chat_id: str) -> bool:
     return "@g.us" in chat_id
 
 
-def _parse_ai_response(text: str) -> tuple[list[dict], bool, bool]:
+def _parse_ai_response(text: str) -> tuple[list[dict], bool, bool, tuple[datetime, str] | None]:
     """
     Parseia a resposta da IA:
     - Extrai flag [FINALIZADO=0/1]
     - Extrai flag [TRANSFERIR=0/1] (indica transferencia para equipe humana)
+    - Extrai flag [AGENDAR=YYYY-MM-DDTHH:MM|modalidade] (PLENO apenas)
     - Quebra em partes (por \\n\\n ou |||)
     - Detecta tags de midia e substitui pelos links do dicionario
-    Retorna (partes, finalizado, transferir).
+    Retorna (partes, finalizado, transferir, agendar).
+    agendar = (datetime, modalidade) quando a IA emitiu [AGENDAR=...]; None caso contrario.
     """
     finalizado = False
     match = re.search(r"\[FINALIZADO=(\d)\]", text)
@@ -127,6 +132,17 @@ def _parse_ai_response(text: str) -> tuple[list[dict], bool, bool]:
     if match_t:
         transferir = match_t.group(1) == "1"
         text = re.sub(r"\[TRANSFERIR=\d\]", "", text).strip()
+
+    agendar: tuple[datetime, str] | None = None
+    match_a = re.search(r"\[AGENDAR=([^\]|]+?)(?:\|([^\]]+))?\]", text)
+    if match_a:
+        iso_str = match_a.group(1).strip()
+        modalidade = (match_a.group(2) or "").strip()
+        try:
+            agendar = (datetime.fromisoformat(iso_str), modalidade)
+        except ValueError:
+            logger.warning("AGENDAR com formato invalido: %r", iso_str)
+        text = re.sub(r"\[AGENDAR=[^\]]+\]", "", text).strip()
 
     if "|||" in text:
         raw_parts = [p.strip() for p in text.split("|||") if p.strip()]
@@ -146,7 +162,7 @@ def _parse_ai_response(text: str) -> tuple[list[dict], bool, bool]:
     if not parts:
         parts = [{"type": "text", "content": text}]
 
-    return parts, finalizado, transferir
+    return parts, finalizado, transferir, agendar
 
 
 # ---- processamento principal ----
@@ -217,6 +233,14 @@ async def _process_message(msg: dict) -> None:
 
     if push_name and lead.get("name", "") != push_name:
         await rds.update_lead(phone, name=push_name)
+
+    # PLENO: marca ultimo contato do lead no SQLite (insumo do reactivation job)
+    try:
+        await db.touch_last_message(phone)
+        if push_name:
+            await db.upsert_lead(phone, nome=push_name)
+    except Exception as e:
+        log(_warn(f"[{phone}] Falha ao atualizar last_customer_message_at: {e}"))
 
     # E) Identificacao do tipo de mensagem
     media_url = msg.get("media_url", "")
@@ -308,8 +332,8 @@ async def _process_message(msg: dict) -> None:
         return
 
     # I) Parsing e envio
-    parts, finalizado, transferir = _parse_ai_response(ai_response)
-    log(_ok(f"[TOOL GEMINI] Resultado: SUCESSO - {len(parts)} parte(s) gerada(s), finalizado={finalizado}, transferir={transferir}"))
+    parts, finalizado, transferir, agendar = _parse_ai_response(ai_response)
+    log(_ok(f"[TOOL GEMINI] Resultado: SUCESSO - {len(parts)} parte(s) gerada(s), finalizado={finalizado}, transferir={transferir}, agendar={agendar is not None}"))
     log(_ai(f"[{phone}] {ai_response[:400]}"))
     if tokens[2]:
         log(f"[TOKENS] Entrada: {tokens[0]} | Sa\u00edda: {tokens[1]} | Total: {tokens[2]}")
@@ -332,6 +356,10 @@ async def _process_message(msg: dict) -> None:
     # J) Alerta de atendimento humano
     if transferir:
         asyncio.create_task(_maybe_send_alert(phone, lead, unified_msg))
+
+    # J.1) PLENO: cria agendamento quando a IA emitiu [AGENDAR=...]
+    if agendar is not None:
+        asyncio.create_task(_handle_agendar(phone, lead.get("name", ""), agendar))
 
     # K) Pos-envio: finalizacao + resumo em background
     if finalizado:
@@ -372,6 +400,35 @@ async def _maybe_send_alert(phone: str, lead: dict, user_msg: str) -> None:
     except Exception as e:
         log(_err(f"[TOOL ALERTA_EQUIPE] Resultado: FALHA - {e}"))
         logger.exception("Erro ao enviar alerta de atendimento humano: %s", e)
+        _save_session_log(phone)
+
+
+async def _handle_agendar(phone: str, nome: str, agendar: tuple[datetime, str]) -> None:
+    """PLENO: cria evento no calendario (Google ou externo) e persiste em SQLite."""
+    _begin_session_log()
+    start_at, modalidade = agendar
+    log(f"[TOOL AGENDAR] Executando create_event(phone={phone}, start={start_at.isoformat()}, modalidade={modalidade or '-'})")
+    try:
+        source, external_id = await calendar_facade.create_event(
+            phone=phone,
+            nome=nome or phone,
+            start_at=start_at,
+            modalidade=modalidade or None,
+        )
+        if not external_id:
+            log(_warn(f"[TOOL AGENDAR] Resultado: sem external_id — backend {source} pode estar indisponivel"))
+        await db.schedule_appointment(
+            phone=phone,
+            scheduled_at_iso=start_at.isoformat(),
+            source=source,
+            external_id=external_id,
+            modalidade=modalidade or None,
+        )
+        log(_ok(f"[TOOL AGENDAR] Resultado: SUCESSO - source={source}, external_id={external_id}"))
+    except Exception as e:
+        log(_err(f"[TOOL AGENDAR] Resultado: EXCECAO - {e}"))
+        logger.exception("Erro ao registrar agendamento para %s", phone)
+    finally:
         _save_session_log(phone)
 
 
