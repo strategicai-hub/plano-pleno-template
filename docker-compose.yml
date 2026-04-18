@@ -1,0 +1,64 @@
+version: "3.8"
+
+x-common-env: &common-env
+  - PROJECT_SLUG=${PROJECT_SLUG}
+  - BUSINESS_NAME=${BUSINESS_NAME}
+  - ASSISTANT_NAME=${ASSISTANT_NAME}
+  - RABBITMQ_HOST=${RABBITMQ_HOST}
+  - RABBITMQ_PORT=${RABBITMQ_PORT}
+  - RABBITMQ_USER=${RABBITMQ_USER}
+  - RABBITMQ_PASS=${RABBITMQ_PASS}
+  - RABBITMQ_VHOST=${RABBITMQ_VHOST}
+  - RABBITMQ_QUEUE=${RABBITMQ_QUEUE}
+  - REDIS_HOST=${REDIS_HOST}
+  - REDIS_PORT=${REDIS_PORT}
+  - REDIS_PASSWORD=${REDIS_PASSWORD}
+  - GEMINI_API_KEY=${GEMINI_API_KEY}
+  - UAZAPI_BASE_URL=${UAZAPI_BASE_URL}
+  - UAZAPI_TOKEN=${UAZAPI_TOKEN}
+  - UAZAPI_INSTANCE=${UAZAPI_INSTANCE}
+  - WEBHOOK_PATH=${WEBHOOK_PATH}
+  - DEBOUNCE_SECONDS=${DEBOUNCE_SECONDS}
+  - BLOCK_TTL_SECONDS=${BLOCK_TTL_SECONDS}
+  - ALERT_PHONE=${ALERT_PHONE}
+  - DEBOUNCE_BYPASS_PHONES=${DEBOUNCE_BYPASS_PHONES}
+  - ALLOWED_PHONES=${ALLOWED_PHONES}
+  - GOOGLE_CREDENTIALS_JSON=${GOOGLE_CREDENTIALS_JSON}
+  - GOOGLE_SHEET_ID=${GOOGLE_SHEET_ID}
+
+services:
+  {{SLUG}}-api:
+    image: ghcr.io/{{GITHUB_OWNER}}/{{REPO_NAME}}:latest
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    networks:
+      - network_public
+    environment: *common-env
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      labels:
+        - "traefik.enable=true"
+        - "traefik.docker.network=network_public"
+        - "traefik.http.routers.{{SLUG}}.rule=Host(`webhook-whatsapp.strategicai.com.br`) && PathPrefix(`/{{SLUG}}`)"
+        - "traefik.http.routers.{{SLUG}}.entrypoints=websecure"
+        - "traefik.http.routers.{{SLUG}}.tls=true"
+        - "traefik.http.routers.{{SLUG}}.tls.certresolver=letsencryptresolver"
+        - "traefik.http.services.{{SLUG}}.loadbalancer.server.port=8000"
+
+  {{SLUG}}-worker:
+    image: ghcr.io/{{GITHUB_OWNER}}/{{REPO_NAME}}:latest
+    command: python worker.py
+    networks:
+      - network_public
+    environment: *common-env
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+
+networks:
+  network_public:
+    external: true
