@@ -56,6 +56,20 @@ class Settings(BaseSettings):
     # CORS (comma-separated, use "*" para liberar todas as origens)
     CORS_ORIGINS: str = "*"
 
+    # ----- Pleno: persistencia e follow-ups -----
+    SQLITE_PATH: str = "/data/pleno.db"
+    SCHEDULER_TZ: str = "America/Sao_Paulo"
+    FOLLOWUP_DRY_RUN: bool = False
+
+    # Google Calendar (opcional; pode vir tambem do client.yaml > appointments.google_calendar.calendar_id)
+    GOOGLE_CALENDAR_ID: str = ""
+
+    # Drivers de sistema externo (opcionais — preenchidos conforme o cliente)
+    CLOUDGYM_USERNAME: str = ""
+    CLOUDGYM_PASSWORD: str = ""
+    CLOUDGYM_UNIT_ID: str = ""
+    CLOUDGYM_PROXY: str = ""
+
     @model_validator(mode="after")
     def _fill_defaults_from_slug(self) -> "Settings":
         if not self.RABBITMQ_QUEUE:

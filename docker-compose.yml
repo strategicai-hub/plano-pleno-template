@@ -25,6 +25,14 @@ x-common-env: &common-env
   - ALLOWED_PHONES=${ALLOWED_PHONES}
   - GOOGLE_CREDENTIALS_JSON=${GOOGLE_CREDENTIALS_JSON}
   - GOOGLE_SHEET_ID=${GOOGLE_SHEET_ID}
+  - GOOGLE_CALENDAR_ID=${GOOGLE_CALENDAR_ID}
+  - SQLITE_PATH=${SQLITE_PATH:-/data/pleno.db}
+  - SCHEDULER_TZ=${SCHEDULER_TZ:-America/Sao_Paulo}
+  - FOLLOWUP_DRY_RUN=${FOLLOWUP_DRY_RUN:-false}
+  - CLOUDGYM_USERNAME=${CLOUDGYM_USERNAME:-}
+  - CLOUDGYM_PASSWORD=${CLOUDGYM_PASSWORD:-}
+  - CLOUDGYM_UNIT_ID=${CLOUDGYM_UNIT_ID:-}
+  - CLOUDGYM_PROXY=${CLOUDGYM_PROXY:-}
 
 services:
   {{SLUG}}-api:
@@ -33,6 +41,8 @@ services:
     networks:
       - network_public
     environment: *common-env
+    volumes:
+      - {{SLUG}}_data:/data
     deploy:
       replicas: 1
       restart_policy:
@@ -53,6 +63,8 @@ services:
     networks:
       - network_public
     environment: *common-env
+    volumes:
+      - {{SLUG}}_data:/data
     deploy:
       replicas: 1
       restart_policy:
@@ -62,3 +74,6 @@ services:
 networks:
   network_public:
     external: true
+
+volumes:
+  {{SLUG}}_data:

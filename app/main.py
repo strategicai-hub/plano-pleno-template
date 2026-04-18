@@ -5,9 +5,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.db import init_db_sync
 from app.services import rabbitmq
 from app.webhook import router
 from app.api import router as api_router
+
+init_db_sync()
 
 logging.basicConfig(
     level=logging.INFO,

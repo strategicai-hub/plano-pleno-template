@@ -126,3 +126,43 @@ media: {}
   # "[IMAGEM_ACADEMIA]":
   #   url: "https://exemplo.com/foto_academia.jpg"
   #   type: "image"
+
+# ============================================================
+# AGENDAMENTO (exclusivo do plano pleno)
+# ============================================================
+# Define onde os agendamentos gerados pela IA sao persistidos.
+# A IA emite a flag [AGENDAR=<iso-datetime>|<modalidade>] e o consumer
+# cria o evento no backend escolhido.
+appointments:
+  source: "google_calendar"      # "google_calendar" | "external_system"
+  google_calendar:
+    calendar_id: ""              # ID do calendario (compartilhado com o Service Account)
+  external_system:
+    type: "cloudgym"             # driver usado quando source=external_system
+  slot_duration_minutes: 60      # duracao padrao de um slot
+  lead_time_minutes: 60          # antecedencia minima entre agendamento e aula
+  business_hours:                # janela de funcionamento usada para sugerir slots
+    mon_fri: ["06:00-22:00"]
+    sat: ["09:00-13:00"]
+    sun: []
+
+# ============================================================
+# FOLLOW-UPS AUTOMATICOS (exclusivo do plano pleno)
+# ============================================================
+# Jobs disparados pelo scheduler.py (APScheduler).
+followups:
+  reactivation:
+    enabled: true
+    inactive_hours: 24           # dispara apos N horas sem resposta do lead
+    max_stages: 3                # ate N tentativas de reativacao
+    day_of_week: "mon-fri"       # apenas dias uteis
+    cadence_minutes: 1           # frequencia do job (em minutos)
+  appointment_reminder:
+    enabled: true
+    hours_before: 3              # envia lembrete X horas antes do agendamento
+    cadence_minutes: 15          # frequencia do job (em minutos)
+  templates:
+    reactivation_stage_1: "Oi {nome}, passando pra saber se ainda tem interesse!"
+    reactivation_stage_2: "Oi {nome}, consegui um horario especial pra voce — quer aproveitar?"
+    reactivation_stage_3: "Oi {nome}, ultima chance — posso segurar sua vaga?"
+    appointment_reminder: "Lembrete: sua aula e hoje as {horario}. Te esperamos!"

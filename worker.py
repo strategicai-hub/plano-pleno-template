@@ -6,6 +6,7 @@ import asyncio
 import logging
 
 from app.consumer import start_consumer
+from app.db import init_db_sync
 
 logging.basicConfig(
     level=logging.INFO,
@@ -13,4 +14,5 @@ logging.basicConfig(
 )
 
 if __name__ == "__main__":
+    init_db_sync()
     asyncio.run(start_consumer())
