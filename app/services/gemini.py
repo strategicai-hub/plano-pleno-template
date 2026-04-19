@@ -95,6 +95,63 @@ async def generate_summary(phone: str) -> str:
         return ""
 
 
+async def generate_reactivation_message(
+    phone: str,
+    nome: str,
+    stage: int,
+    now_str: str = "",
+) -> str:
+    """
+    PLENO: gera mensagem personalizada de reativacao a partir do historico do
+    lead. `stage` 1..N controla o tom (primeiro contato x ultima chance).
+    Se o cliente preencheu `followups.templates.reactivation_stage_<N>` no
+    client.yaml, o template pode servir de base — aqui deixamos a geracao
+    livre (Gemini redige a partir do contexto da conversa).
+    """
+    _ensure_configured()
+    history = await get_chat_history(phone)
+
+    lines = []
+    for entry in history[-12:]:
+        role = "Atendente" if entry.get("role") == "model" else "Lead"
+        text = entry.get("parts", [{}])[0].get("text", "")
+        if text:
+            lines.append(f"{role}: {text[:240]}")
+
+    client = load_client_data()
+    business_name = (client.get("business") or {}).get("name") or ""
+    assistant_name = (client.get("assistant") or {}).get("name") or ""
+    templates = ((client.get("followups") or {}).get("templates") or {})
+    hint = templates.get(f"reactivation_stage_{stage}", "")
+
+    tone = {
+        1: "empatico, curto, lembrando que a gente ficou no aguardo",
+        2: "encorajador, destacando algo especifico que o lead demonstrou interesse",
+        3: "ultima chamada, respeitoso, sem pressao",
+    }.get(stage, "educado e direto")
+
+    prompt = (
+        f"Voce e {assistant_name or 'a assistente'} da {business_name or 'empresa'}.\n"
+        f"Data/hora atual: {now_str or '-'}\n"
+        f"Nome do lead: {nome or '(desconhecido)'}\n"
+        f"Tom desta mensagem: {tone}\n"
+        + (f"Referencia (nao copiar literalmente): {hint}\n" if hint else "")
+        + "Regras: 1 paragrafo, no maximo 2 frases, SEM asteriscos/markdown, "
+          "uma unica pergunta aberta no final convidando o lead a retomar a conversa. "
+          "Nao se apresente (ele ja te conhece).\n\n"
+        "Trecho da conversa anterior:\n"
+        + "\n".join(lines or ["(sem historico)"])
+    )
+
+    model = genai.GenerativeModel("gemini-2.5-flash")
+    try:
+        response = model.generate_content(prompt)
+        return response.text.strip() if response.text else ""
+    except Exception:
+        logger.exception("Erro ao gerar mensagem de reativacao para %s", phone)
+        return ""
+
+
 async def analyze_image(image_bytes: bytes) -> str:
     _ensure_configured()
     model = genai.GenerativeModel("gemini-2.5-flash")

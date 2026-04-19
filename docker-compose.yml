@@ -71,6 +71,20 @@ services:
         condition: any
         delay: 5s
 
+  {{SLUG}}-scheduler:
+    image: ghcr.io/{{GITHUB_OWNER}}/{{REPO_NAME}}:latest
+    command: python scheduler.py
+    networks:
+      - network_public
+    environment: *common-env
+    volumes:
+      - {{SLUG}}_data:/data
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+
 networks:
   network_public:
     external: true
