@@ -191,7 +191,13 @@ async def _process_message(msg: dict) -> None:
         logger.info("Ignorando mensagem invalida (phone=%r, msg_type=%r)", phone, msg_type)
         return
 
-    # A.1) Whitelist (se configurada, apenas numeros listados recebem resposta)
+    # A.1) Blacklist (remetentes silenciosamente ignorados - equipe interna, etc.)
+    blocked = settings.blocked_sender_phones_set
+    if phone in blocked:
+        logger.info("Phone %s em BLOCKED_SENDER_PHONES - descartando silenciosamente", phone)
+        return
+
+    # A.2) Whitelist (se configurada, apenas numeros listados recebem resposta)
     allowed = settings.allowed_phones_set
     if allowed and phone not in allowed:
         logger.info("Phone %s fora da whitelist ALLOWED_PHONES - ignorando", phone)

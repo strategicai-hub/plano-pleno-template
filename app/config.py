@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     # Se vazio, responde para todos. Util em ambientes de homologacao/piloto.
     ALLOWED_PHONES: str = ""
 
+    # Blacklist de remetentes que devem ser silenciosamente ignorados
+    # (comma-separated). Uso tipico: numeros da equipe interna que
+    # usam o WhatsApp do negocio para trocar recados, sem virar lead.
+    BLOCKED_SENDER_PHONES: str = ""
+
     # CORS (comma-separated, use "*" para liberar todas as origens)
     CORS_ORIGINS: str = "*"
 
@@ -91,6 +96,12 @@ class Settings(BaseSettings):
         if not self.ALLOWED_PHONES:
             return set()
         return {p.strip() for p in self.ALLOWED_PHONES.split(",") if p.strip()}
+
+    @property
+    def blocked_sender_phones_set(self) -> set[str]:
+        if not self.BLOCKED_SENDER_PHONES:
+            return set()
+        return {p.strip() for p in self.BLOCKED_SENDER_PHONES.split(",") if p.strip()}
 
     @property
     def cors_origins(self) -> list[str]:

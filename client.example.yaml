@@ -3,6 +3,11 @@
 # Copie este arquivo para client.yaml e edite os valores.
 # ============================================================
 
+# Nicho do negocio - define qual prompt em app/prompts/{niche}.j2
+# e usado pela IA. Nichos suportados estao em app/prompts/.
+# Se omitido, usa "academia" por padrao.
+niche: "academia"
+
 business:
   name: "AJE DE BOXE"
   type: "academia de boxe"

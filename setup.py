@@ -272,6 +272,34 @@ def check_prereqs():
         sys.exit("  ERRO: gh nao autenticado. Execute: gh auth login")
 
 
+def list_available_niches() -> list[str]:
+    """Lista nichos disponiveis a partir de app/prompts/*.j2."""
+    prompts_dir = Path(__file__).parent / "app" / "prompts"
+    if not prompts_dir.exists():
+        return ["academia"]
+    niches = sorted(p.stem for p in prompts_dir.glob("*.j2"))
+    return niches or ["academia"]
+
+
+def ask_niche() -> str:
+    niches = list_available_niches()
+    if len(niches) == 1:
+        return niches[0]
+    default = "academia" if "academia" in niches else niches[0]
+    print("\n  Nichos disponiveis:")
+    for i, n in enumerate(niches, 1):
+        print(f"    {i}) {n}")
+    while True:
+        raw = input(f"  Escolha o nicho [{default}]: ").strip()
+        if not raw:
+            return default
+        if raw.isdigit() and 1 <= int(raw) <= len(niches):
+            return niches[int(raw) - 1]
+        if raw in niches:
+            return raw
+        print(f"    Opcao invalida. Use numero (1-{len(niches)}) ou o nome exato.")
+
+
 def collect_inputs() -> dict:
     print("\n" + "=" * 60)
     print("  PLANO PLENO - Novo projeto")
@@ -282,6 +310,9 @@ def collect_inputs() -> dict:
     slug = ask("Slug", slugify(bname))
     aname = ask("Nome da assistente", "Assistente")
     phone = ask("Telefone do dono (ex: 5511999990000)")
+
+    print("\n  --- NICHO DO NEGOCIO ---")
+    niche = ask_niche()
 
     print("\n  --- TOKENS ---")
     uaz = ask("UAZAPI token")
@@ -307,6 +338,7 @@ def collect_inputs() -> dict:
 
     print(f"\n  --- RESUMO ---")
     print(f"  Negocio:  {bname}")
+    print(f"  Nicho:    {niche}")
     print(f"  Slug:     {slug}")
     print(f"  URL:      https://{WEBHOOK_DOMAIN}/{slug}")
 
@@ -318,7 +350,7 @@ def collect_inputs() -> dict:
         "alert_phone": phone, "uazapi_token": uaz, "gemini_key": gem,
         "sheet_id": sid if sid != "pular" else "", "google_creds": gcreds,
         "calendar_id": gcal if gcal != "pular" else "",
-        "repo_name": slug,
+        "repo_name": slug, "niche": niche,
     }
 
 
@@ -393,6 +425,7 @@ ALLOWED_PHONES=
     client = repo_dir / "client.yaml"
     if example.exists() and not client.exists():
         c = example.read_text(encoding="utf-8")
+        c = c.replace('niche: "academia"', f'niche: "{data["niche"]}"')
         c = c.replace('"AJE DE BOXE"', f'"{data["business_name"]}"')
         c = c.replace('"academia de boxe"', '"[PREENCHER]"')
         c = c.replace('"RUA FREI MAURO, 31 - ADRIANOPOLIS"', '"[PREENCHER]"')
