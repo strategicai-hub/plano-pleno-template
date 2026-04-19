@@ -274,7 +274,7 @@ def check_prereqs():
 
 def collect_inputs() -> dict:
     print("\n" + "=" * 60)
-    print("  PLANO START - Novo projeto")
+    print("  PLANO PLENO - Novo projeto")
     print("=" * 60)
 
     print("\n  --- DADOS DO NEGOCIO ---")
@@ -287,6 +287,7 @@ def collect_inputs() -> dict:
     uaz = ask("UAZAPI token")
     gem = ask("GEMINI API key")
     sid = ask("Google Sheet ID (ou 'pular')", "pular")
+    gcal = ask("Google Calendar ID (ou 'pular')", "pular")
 
     gcreds = ""
     if sid != "pular":
@@ -316,6 +317,7 @@ def collect_inputs() -> dict:
         "business_name": bname, "slug": slug, "assistant_name": aname,
         "alert_phone": phone, "uazapi_token": uaz, "gemini_key": gem,
         "sheet_id": sid if sid != "pular" else "", "google_creds": gcreds,
+        "calendar_id": gcal if gcal != "pular" else "",
         "repo_name": slug,
     }
 
@@ -374,6 +376,10 @@ UAZAPI_BASE_URL=https://strategicai.uazapi.com
 UAZAPI_TOKEN={data['uazapi_token']}
 GOOGLE_CREDENTIALS_JSON={data['google_creds']}
 GOOGLE_SHEET_ID={data['sheet_id']}
+GOOGLE_CALENDAR_ID={data['calendar_id']}
+SQLITE_PATH=/data/pleno.db
+SCHEDULER_TZ=America/Sao_Paulo
+FOLLOWUP_DRY_RUN=false
 DEBOUNCE_SECONDS=30
 BLOCK_TTL_SECONDS=3600
 ALERT_PHONE={data['alert_phone']}
@@ -438,6 +444,10 @@ def build_env_list(data: dict) -> list[dict]:
         {"name": "UAZAPI_TOKEN", "value": data["uazapi_token"]},
         {"name": "GOOGLE_CREDENTIALS_JSON", "value": data["google_creds"]},
         {"name": "GOOGLE_SHEET_ID", "value": data["sheet_id"]},
+        {"name": "GOOGLE_CALENDAR_ID", "value": data["calendar_id"]},
+        {"name": "SQLITE_PATH", "value": "/data/pleno.db"},
+        {"name": "SCHEDULER_TZ", "value": "America/Sao_Paulo"},
+        {"name": "FOLLOWUP_DRY_RUN", "value": "false"},
         {"name": "DEBOUNCE_SECONDS", "value": "30"},
         {"name": "BLOCK_TTL_SECONDS", "value": "3600"},
         {"name": "ALERT_PHONE", "value": data["alert_phone"]},
