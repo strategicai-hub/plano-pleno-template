@@ -50,7 +50,7 @@ Sempre que fizer uma correção ou melhoria em um projeto de cliente do plano pl
 
 ## Projetos derivados diretos
 
-_(Nenhum cliente ainda — quando houver, incluir aqui.)_
+- [luitz-prime](https://github.com/strategicai-hub/luitz-prime) — Luitz Prime Consorcio (nicho: consorcio, assistente: Vic)
 
 > **Importante:** esta lista é a **fonte de verdade** usada por `scripts/sync-to-derived.sh`. Ao adicionar um novo cliente derivado deste template, inclua o link do repo aqui.
 
