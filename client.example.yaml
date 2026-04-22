@@ -15,7 +15,10 @@ business:
 
 assistant:
   name: "Vic"
-  greeting: "Ola! Sou a Vic, tudo bem?"
+  # greeting é injetado dinamicamente pelo código (prompt.py) com base no
+  # horário de São Paulo: "bom dia" / "boa tarde" / "boa noite". Qualquer
+  # valor informado aqui é ignorado — deixe em branco ou omita o campo.
+  greeting: ""
 
 location:
   parking: "Estacionamento facilitado ao lado do Emporio DB V8"

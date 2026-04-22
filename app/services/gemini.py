@@ -4,7 +4,7 @@ import google.generativeai as genai
 
 from app.client_data import load_client_data
 from app.config import settings
-from app.prompt import SYSTEM_PROMPT
+from app.prompt import get_system_prompt
 from app.services.redis_service import get_chat_history, append_chat_history
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ async def chat(phone: str, user_message: str, lead_name: str = "") -> tuple[str,
 
     model = genai.GenerativeModel(
         model_name="gemini-2.5-flash",
-        system_instruction=SYSTEM_PROMPT,
+        system_instruction=get_system_prompt(),
     )
 
     chat_session = model.start_chat(history=history)
