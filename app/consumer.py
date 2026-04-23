@@ -361,33 +361,34 @@ async def _process_message(msg: dict) -> None:
 
     # J) Alerta de atendimento humano
     if transferir:
-        asyncio.create_task(_maybe_send_alert(phone, lead, unified_msg))
+        await _maybe_send_alert(phone, lead, unified_msg)
 
     # J.1) PLENO: cria agendamento quando a IA emitiu [AGENDAR=...]
     if agendar is not None:
-        asyncio.create_task(_handle_agendar(phone, lead.get("name", ""), agendar))
+        await _handle_agendar(phone, lead.get("name", ""), agendar)
 
-    # K) Pos-envio: finalizacao + resumo em background
+    # K) Pos-envio: finalizacao + resumo
     if finalizado:
         await rds.set_block(phone)
         await rds.update_lead(phone, status_conversa="Finalizado")
         log(_ok(f"[{phone}] Conversa marcada como finalizada"))
 
-    asyncio.create_task(_update_summary_and_sheets(phone, lead.get("name", "")))
+    await _update_summary_and_sheets(phone, lead.get("name", ""))
 
     _save_session_log(phone)
 
 
 async def _maybe_send_alert(phone: str, lead: dict, user_msg: str) -> None:
-    """Envia alerta de atendimento humano. Chamada apenas quando a IA emite [TRANSFERIR=1]."""
-    _begin_session_log()
+    """Envia alerta de atendimento humano. Chamada apenas quando a IA emite [TRANSFERIR=1].
+
+    Contribui para o buffer de log da chamada pai (_process_message) para ficar
+    no mesmo evento do painel.
+    """
     if not settings.ALERT_PHONE:
         log(_warn(f"[TOOL ALERTA_EQUIPE] Nao acionado - ALERT_PHONE nao configurado"))
-        _save_session_log(phone)
         return
     if await rds.is_alert_sent(phone):
         log(f"[TOOL ALERTA_EQUIPE] Ignorado - alerta ja enviado recentemente para {phone}")
-        _save_session_log(phone)
         return
 
     contact = lead.get("name", "") or phone
@@ -402,16 +403,17 @@ async def _maybe_send_alert(phone: str, lead: dict, user_msg: str) -> None:
         await uazapi.send_text(settings.ALERT_PHONE, alert_text)
         await rds.set_alert_sent(phone)
         log(_ok(f"[TOOL ALERTA_EQUIPE] Resultado: SUCESSO - equipe notificada sobre {phone}"))
-        _save_session_log(phone)
     except Exception as e:
         log(_err(f"[TOOL ALERTA_EQUIPE] Resultado: FALHA - {e}"))
         logger.exception("Erro ao enviar alerta de atendimento humano: %s", e)
-        _save_session_log(phone)
 
 
 async def _handle_agendar(phone: str, nome: str, agendar: tuple[datetime, str]) -> None:
-    """PLENO: cria evento no calendario (Google ou externo) e persiste em SQLite."""
-    _begin_session_log()
+    """PLENO: cria evento no calendario (Google ou externo) e persiste em SQLite.
+
+    Contribui para o buffer de log da chamada pai (_process_message) para ficar
+    no mesmo evento do painel.
+    """
     start_at, modalidade = agendar
     log(f"[TOOL AGENDAR] Executando create_event(phone={phone}, start={start_at.isoformat()}, modalidade={modalidade or '-'})")
     try:
@@ -434,13 +436,14 @@ async def _handle_agendar(phone: str, nome: str, agendar: tuple[datetime, str]) 
     except Exception as e:
         log(_err(f"[TOOL AGENDAR] Resultado: EXCECAO - {e}"))
         logger.exception("Erro ao registrar agendamento para %s", phone)
-    finally:
-        _save_session_log(phone)
 
 
 async def _update_summary_and_sheets(phone: str, name: str) -> None:
-    """Gera resumo da conversa, salva no Redis e na planilha do Google."""
-    _begin_session_log()
+    """Gera resumo da conversa, salva no Redis e na planilha do Google.
+
+    Contribui para o buffer de log da chamada pai (_process_message) para ficar
+    no mesmo evento do painel.
+    """
     log(f"[TOOL RESUMO] Executando generate_summary(phone={phone})")
     resumo = ""
     try:
@@ -466,8 +469,6 @@ async def _update_summary_and_sheets(phone: str, name: str) -> None:
     except Exception as e:
         log(_err(f"[TOOL SHEETS] Resultado: EXCECAO - {e}"))
         logger.exception("Erro ao atualizar sheets para %s: %s", phone, e)
-    finally:
-        _save_session_log(phone)
 
 
 async def start_consumer() -> None:
