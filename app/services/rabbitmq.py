@@ -59,16 +59,28 @@ async def close() -> None:
 async def consume(callback: Callable[[dict], Awaitable[None]]) -> None:
     connection = await aio_pika.connect_robust(settings.rabbitmq_url)
     channel = await connection.channel()
-    await channel.set_qos(prefetch_count=1)
+    await channel.set_qos(prefetch_count=20)
     queue = await channel.declare_queue(settings.RABBITMQ_QUEUE, durable=True)
 
     logger.info("Consumindo fila %s ...", settings.RABBITMQ_QUEUE)
 
     async with queue.iterator() as queue_iter:
         async for message in queue_iter:
-            async with message.process():
-                try:
-                    body = json.loads(message.body.decode())
-                    await callback(body)
-                except Exception:
-                    logger.exception("Erro ao processar mensagem da fila")
+            # Dispara em task separada para permitir que o debounce em
+            # consumer.py funcione: a primeira msg do lead dorme DEBOUNCE_SECONDS
+            # enquanto as seguintes apenas empilham no buffer do Redis. Sem isso
+            # cada msg vira um processamento serial com sua propria chamada de IA.
+            try:
+                body = json.loads(message.body.decode())
+                await message.ack()
+                asyncio.create_task(_safe_dispatch(callback, body))
+            except Exception:
+                logger.exception("Erro ao decodificar mensagem da fila")
+                await message.nack(requeue=False)
+
+
+async def _safe_dispatch(callback: Callable[[dict], Awaitable[None]], body: dict) -> None:
+    try:
+        await callback(body)
+    except Exception:
+        logger.exception("Erro ao processar mensagem da fila")
