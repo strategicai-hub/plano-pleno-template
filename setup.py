@@ -415,6 +415,7 @@ FOLLOWUP_DRY_RUN=false
 DEBOUNCE_SECONDS=30
 BLOCK_TTL_SECONDS=3600
 ALERT_PHONE={data['alert_phone']}
+ALERT_COOLDOWN_SECONDS=1800
 DEBOUNCE_BYPASS_PHONES={data['alert_phone']}
 ALLOWED_PHONES=
 """
@@ -484,6 +485,7 @@ def build_env_list(data: dict) -> list[dict]:
         {"name": "DEBOUNCE_SECONDS", "value": "30"},
         {"name": "BLOCK_TTL_SECONDS", "value": "3600"},
         {"name": "ALERT_PHONE", "value": data["alert_phone"]},
+        {"name": "ALERT_COOLDOWN_SECONDS", "value": "1800"},
         {"name": "DEBOUNCE_BYPASS_PHONES", "value": data["alert_phone"]},
         {"name": "ALLOWED_PHONES", "value": ""},
     ]

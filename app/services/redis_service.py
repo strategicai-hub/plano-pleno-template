@@ -77,9 +77,9 @@ async def clear_chat_history(phone: str) -> None:
 
 # --------------- alerta de atendimento humano ---------------
 
-async def set_alert_sent(phone: str, ttl: int = 3600) -> None:
+async def set_alert_sent(phone: str, ttl: int | None = None) -> None:
     r = await get_redis()
-    await r.set(keys.alert_key(phone), "1", ex=ttl)
+    await r.set(keys.alert_key(phone), "1", ex=ttl or settings.ALERT_COOLDOWN_SECONDS)
 
 
 async def is_alert_sent(phone: str) -> bool:

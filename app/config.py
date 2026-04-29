@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     # Formato: somente digitos, com DDI (ex: 5511999990000)
     ALERT_PHONE: str = ""
 
+    # Cooldown entre alertas para o mesmo telefone (segundos).
+    # Default 1800 (30 min) para nao poluir a recepcao com varios alertas
+    # do mesmo lead enquanto a equipe ainda processa o primeiro.
+    ALERT_COOLDOWN_SECONDS: int = 1800
+
     # Numeros que ignoram debounce (comma-separated, ex: "5511999990000,5511888880000")
     DEBOUNCE_BYPASS_PHONES: str = ""
 
