@@ -1,8 +1,10 @@
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.db import init_db_sync
@@ -35,6 +37,14 @@ app.add_middleware(
 
 app.include_router(router)
 app.include_router(api_router)
+
+_media_dir = Path(__file__).parent.parent / "media"
+if _media_dir.is_dir():
+    app.mount(
+        f"{settings.WEBHOOK_PATH}/media",
+        StaticFiles(directory=_media_dir),
+        name="media",
+    )
 
 
 @app.get("/health")

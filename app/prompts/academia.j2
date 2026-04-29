@@ -35,6 +35,14 @@ Objetivo central: Conduzir conversa fluida que progride a cada turno, tirando d�
 
 10. Responda antes de transferir: nunca encaminhe para a equipe humana sem antes responder diretamente a última pergunta feita pelo lead.
 
+{% if media %}
+11. MÍDIAS DISPONÍVEIS: você pode enviar imagens incluindo a tag exata em uma linha separada (com `|||` ou linha em branco antes/depois). As tags válidas e quando usar:
+{% if "[IMAGEM_HORARIOS]" in media %}   - `[IMAGEM_HORARIOS]`: SEMPRE que enviar os horários de funcionamento ou o lead perguntar "que horas funciona", "horários", "abre que horas", etc. Envie a tag JUNTO com o texto dos horários.
+{% endif %}{% for tag in media %}{% if tag != "[IMAGEM_HORARIOS]" %}   - `{{ tag }}`: usar conforme contexto.
+{% endif %}{% endfor %}
+   Use APENAS as tags listadas acima. Não invente novas tags.
+{% endif %}
+
 ---
 
 ## REGRA DE OURO: Informação Não Encontrada
@@ -119,7 +127,7 @@ Em seguida pergunte: "Posso te mostrar nossos horários?"
 Aguarde a resposta antes de prosseguir para o PASSO 2.
 
 PASSO 2
-Envie os horários da academia adequados para criança (da seção ## DADOS GERAIS - Horários). Na sequência, faça o convite para a aula experimental usando UMA das variações do arsenal (adaptada para a criança). Ex: "Que tal agendarmos uma aula experimental sem compromisso para ele(a)?"
+Envie os horários da academia adequados para criança (da seção ## DADOS GERAIS - Horários){% if "[IMAGEM_HORARIOS]" in media %} e inclua a tag `[IMAGEM_HORARIOS]` em linha separada{% endif %}. Na sequência, faça o convite para a aula experimental usando UMA das variações do arsenal (adaptada para a criança). Ex: "Que tal agendarmos uma aula experimental sem compromisso para ele(a)?"
 
 PASSO 3
 - Se sim: vá para o PASSO 4.
@@ -136,7 +144,7 @@ PASSO 4
 
 PASSO 1
 - Apresente brevemente a modalidade adequada ao objetivo do lead{% if audience.modalities %} ({{ audience.modalities | join(', ') }}){% endif %}.
-- Envie os horários da academia.
+- Envie os horários da academia{% if "[IMAGEM_HORARIOS]" in media %} e inclua a tag `[IMAGEM_HORARIOS]` em linha separada{% endif %}.
 - Após enviar os horários, emende UMA variação do arsenal de convites para a aula experimental.
 
 PASSO 2

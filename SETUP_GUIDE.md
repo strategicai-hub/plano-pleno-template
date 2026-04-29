@@ -152,12 +152,29 @@ promotions:
 ```
 
 **`media`** - Midias (imagens, videos)
+
+Forma 1 - URL externa (CDN proprio, Wix, etc):
 ```yaml
 media:
   "[IMAGEM_ACADEMIA]":
     url: "https://exemplo.com/foto.jpg"
     type: "image"
 ```
+
+Forma 2 - Hospedagem local (recomendado):
+1. Crie a pasta `media/` na raiz do projeto e coloque os arquivos la (`media/horarios.jpeg`, etc.)
+2. Referencie no `client.yaml` via URL servida pelo proprio app:
+```yaml
+media:
+  "[IMAGEM_HORARIOS]":
+    url: "https://webhook-whatsapp.strategicai.com.br/{slug}/media/horarios.jpeg"
+    type: "image"
+```
+O FastAPI ja monta `media/` automaticamente em `/{slug}/media/*` quando a pasta existe.
+
+Tags reconhecidas pelo prompt `academia.j2`:
+- `[IMAGEM_HORARIOS]`: a IA envia automaticamente quando precisa mostrar horarios.
+- Outras tags: a IA usa conforme contexto.
 
 **`appointments`** (PLENO) - Configuracao de agendamento
 ```yaml
