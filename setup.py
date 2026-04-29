@@ -221,13 +221,13 @@ def gh_secret(repo: str, name: str, value: str):
 
 def gh_package_public(repo: str):
     r = run(
-        f"gh api -X PATCH /user/packages/container/{repo} -f visibility=public",
+        f"gh api -X PATCH /orgs/{GITHUB_OWNER}/packages/container/{repo} -f visibility=public",
         check=False,
     )
     if r.returncode == 0:
         print("    GHCR publico - OK")
     else:
-        print(f"    AVISO: Faca manualmente: https://github.com/users/{GITHUB_OWNER}/packages/container/{repo}/settings")
+        print(f"    AVISO: Faca manualmente: https://github.com/orgs/{GITHUB_OWNER}/packages/container/{repo}/settings")
 
 
 def wait_build(repo: str, timeout: int = 300) -> bool:
