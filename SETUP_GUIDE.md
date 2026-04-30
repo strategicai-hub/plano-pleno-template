@@ -233,7 +233,30 @@ https://webhook-whatsapp.strategicai.com.br/{slug}
 
 > Este e o **unico passo manual** necessario.
 
-### 3. Testar
+### 3. (Opcional) Migrar historico do bot anterior
+
+Use isto **somente** quando o cliente ja tinha um chatbot rodando antes (n8n, langchain, etc) e voce quer que o bot novo conheca as conversas previas.
+
+O bot antigo tipicamente grava no Redis no formato `{phone}@s.whatsapp.net--{slug}` (LIST de mensagens, padrao `RedisChatMessageHistory` do LangChain). O bot novo le `{phone}--{slug}:history`. O script `scripts/migrate_legacy_history.py` copia tudo, extrai o phone (sem `@s.whatsapp.net`) e aplica o `LTRIM 50` do bot novo.
+
+**Setup**:
+
+1. Se o historico antigo esta em **outro Redis**, preencha `LEGACY_REDIS_*` no `.env` (host/port/password do Redis antigo). Se esta no mesmo Redis, pode deixar comentado.
+2. Rode em **dry-run** primeiro para ver o que seria migrado:
+   ```bash
+   python scripts/migrate_legacy_history.py
+   ```
+   Confira: total a migrar, anomalias puladas, distribuicao de tamanhos.
+3. Quando estiver OK, execute de verdade:
+   ```bash
+   python scripts/migrate_legacy_history.py --execute
+   ```
+
+O script e idempotente (apaga e regrava a chave destino antes do RPUSH) e **nao apaga** as chaves de origem (ficam como backup).
+
+> Importante: faca a migracao **antes** de virar o webhook do WhatsApp para o bot novo. Apos o cutover, desligue o bot antigo, senao ele continua gravando no Redis legado e o historico fica fragmentado.
+
+### 4. Testar
 
 1. Envie uma mensagem para o numero WhatsApp da instancia
 2. Acesse o painel: `https://webhook-whatsapp.strategicai.com.br/{slug}/painel`
