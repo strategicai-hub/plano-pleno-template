@@ -22,6 +22,22 @@ plano-start-template  →  plano-pleno-template  →  clientes do plano pleno
 - **start → pleno**: commits genéricos do start são cherry-picked aqui pelo `sync-to-derived.sh` do start (este repo está listado lá como derivado).
 - **pleno → clientes**: commits genéricos daqui são cherry-picked para os clientes listados abaixo pelo `scripts/sync-to-derived.sh` deste repo.
 
+## SDK Gemini obrigatório: `google-genai` + `thinking_budget=0`
+
+**Este template usa `google-genai` (SDK novo) com thinking tokens desabilitados.** É proibido voltar para `google-generativeai` (legado) ou esquecer o `thinking_config=ThinkingConfig(thinking_budget=0)` em qualquer `GenerateContentConfig`.
+
+**Por quê:** o `gemini-2.5-flash` gera tokens de raciocínio internos cobrados como output. Em bot conversacional simples, isso pode triplicar o custo. Em produção (Seven, AJE DE BOXE) a migração para `google-genai` + thinking desligado cortou ~70% do custo.
+
+**Checklist ao alterar `app/services/gemini.py`:**
+- `from google import genai` e `from google.genai import types as gtypes`
+- Cliente: `genai.Client(api_key=...)` (singleton)
+- Toda chamada via `await asyncio.to_thread(client.models.generate_content, model=..., contents=[...], config=GenerateContentConfig(...))`
+- Toda `GenerateContentConfig` inclui `thinking_config=gtypes.ThinkingConfig(thinking_budget=0)`
+- `temperature`: 0.4 chat, 0.2 transcrição/imagem, 0.6 reativação
+- `max_output_tokens`: 300 chat, 150 resumo, 200 reativação
+- Histórico Redis: `ltrim(-10, -1)` (10 mensagens)
+- `generate_summary` só em finalização/transferência (nunca a cada turno)
+
 ## Regra principal: sincronização cliente → template pleno
 
 Sempre que fizer uma correção ou melhoria em um projeto de cliente do plano pleno, avaliar se a mudança é **genérica** (não depende de dados específicos do cliente) e, se for, aplicar a mesma correção neste template também.
