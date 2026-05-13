@@ -27,10 +27,15 @@ async def webhook(request: Request):
 
     from_me = msg.get("fromMe", False)
 
-    # Extrai telefone: tenta sender_pn, chatid, sender (mesma logica do projeto referencia)
-    raw_sender = msg.get("sender_pn") or msg.get("chatid") or msg.get("sender", "")
+    # Quando fromMe=True (atendente humano enviou pelo WhatsApp Web/celular),
+    # sender_pn e o numero DA EMPRESA e chatid e o do LEAD (destinatario).
+    # Precisamos do numero do lead para bloquear o bot corretamente.
+    if from_me:
+        raw_sender = msg.get("chatid") or msg.get("sender_pn") or msg.get("sender", "")
+    else:
+        raw_sender = msg.get("sender_pn") or msg.get("chatid") or msg.get("sender", "")
     phone = raw_sender.split("@")[0] if raw_sender else ""
-    chat_id = raw_sender
+    chat_id = msg.get("chatid") or raw_sender
     push_name = msg.get("senderName", "")
 
     # Detecta tipo e conteudo da mensagem
