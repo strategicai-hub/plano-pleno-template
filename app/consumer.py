@@ -209,6 +209,21 @@ async def _process_message(msg: dict) -> None:
         logger.info("Humano assumiu chat %s - agente bloqueado por 1h", chat_id)
         return
 
+    # B.1) Comando /reset — precedencia MAXIMA (antes do is_blocked para
+    # garantir que o lead consiga destravar o bot mesmo durante atendimento
+    # humano). Apaga TUDO relacionado ao numero (Redis + SQLite).
+    if msg_type in TEXT_TYPES and (msg_text or "").strip().lower() == "/reset":
+        await rds.reset_lead_state(phone)
+        await db.delete_lead(phone)
+        log(_ok(f"[{phone}] Reset solicitado — todo o estado apagado"))
+        try:
+            await uazapi.send_text(phone, "Conversa reiniciada.")
+        except Exception as e:
+            log(_err(f"[{phone}] Falha ao confirmar reset via WhatsApp: {e}"))
+            logger.exception("Erro ao confirmar reset para %s", phone)
+        _save_session_log(phone)
+        return
+
     # C) Verifica bloqueio ativo
     if await rds.is_blocked(phone):
         logger.info("Agente bloqueado para %s - ignorando", chat_id)
@@ -216,20 +231,6 @@ async def _process_message(msg: dict) -> None:
 
     # D) Filtra grupos
     if _is_group(chat_id):
-        return
-
-    # D.1) Comando /reset
-    if msg_type in TEXT_TYPES and (msg_text or "").strip().lower() == "/reset":
-        await rds.clear_chat_history(phone)
-        await rds.delete_lead(phone)
-        await rds.delete_buffer(phone)
-        log(_ok(f"[{phone}] Reset solicitado — historico e lead apagados"))
-        try:
-            await uazapi.send_text(phone, "Conversa reiniciada.")
-        except Exception as e:
-            log(_err(f"[{phone}] Falha ao confirmar reset via WhatsApp: {e}"))
-            logger.exception("Erro ao confirmar reset para %s", phone)
-        _save_session_log(phone)
         return
 
     # Cadastro de lead

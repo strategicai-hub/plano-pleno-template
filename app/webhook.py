@@ -7,7 +7,9 @@ import logging
 
 from fastapi import APIRouter, Request
 
+from app import db
 from app.config import settings
+from app.services import redis_service as rds, uazapi
 from app.services.rabbitmq import publish
 
 logger = logging.getLogger(__name__)
@@ -75,6 +77,18 @@ async def webhook(request: Request):
     if allowed and phone not in allowed:
         logger.info("Mensagem de %s ignorada (fora da whitelist ALLOWED_PHONES)", phone)
         return {"status": "ignored", "reason": "phone not in whitelist"}
+
+    # /reset instantaneo — apaga TUDO do numero (Redis + SQLite) antes de
+    # entrar na fila. Permite ao lead destravar o bot mesmo se estiver bloqueado.
+    if (text or "").strip().lower() == "/reset":
+        await rds.reset_lead_state(phone)
+        await db.delete_lead(phone)
+        try:
+            await uazapi.send_text(phone, "Conversa reiniciada.")
+        except Exception as e:
+            logger.error("[%s] Falha ao confirmar reset: %s", phone, e)
+        logger.info("[%s] Reset instantaneo via webhook", phone)
+        return {"status": "reset"}
 
     queue_message = {
         "phone": phone,

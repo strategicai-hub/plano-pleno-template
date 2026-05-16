@@ -127,3 +127,18 @@ async def update_lead(phone: str, **fields) -> None:
 async def delete_lead(phone: str) -> None:
     r = await get_redis()
     await r.delete(keys.lead_key(phone))
+
+
+async def reset_lead_state(phone: str) -> None:
+    """Apaga TODAS as chaves Redis relacionadas ao lead — usado pelo /reset.
+    Inclui: histórico, buffer, bloqueio humano, flag de alerta, followup ativo
+    e o hash do lead."""
+    r = await get_redis()
+    await r.delete(
+        keys.history_key(phone),
+        keys.buffer_key(phone),
+        keys.block_key(phone),
+        keys.alert_key(phone),
+        keys.followup_active_key(phone),
+        keys.lead_key(phone),
+    )

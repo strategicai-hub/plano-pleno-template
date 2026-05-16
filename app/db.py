@@ -171,6 +171,16 @@ async def mark_finalizado(phone: str) -> None:
     await upsert_lead(phone, status_conversa="finalizado", next_follow_up=None)
 
 
+async def delete_lead(phone: str) -> None:
+    """Remove a row inteira do lead (e seus appointments) — usado pelo /reset."""
+    if not phone:
+        return
+    async with aiosqlite.connect(settings.SQLITE_PATH) as db:
+        await db.execute("DELETE FROM appointments WHERE phone=?", (phone,))
+        await db.execute("DELETE FROM leads WHERE phone=?", (phone,))
+        await db.commit()
+
+
 async def schedule_appointment(
     phone: str,
     scheduled_at_iso: str,
