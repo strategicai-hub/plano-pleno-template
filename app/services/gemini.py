@@ -11,6 +11,8 @@ Decisões importantes:
 """
 import asyncio
 import logging
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Any, Optional
 
 from google import genai
@@ -25,6 +27,29 @@ logger = logging.getLogger(__name__)
 
 _MODEL = "gemini-2.5-flash"
 _client: Optional[genai.Client] = None
+
+
+_SP_TZ_TC = ZoneInfo("America/Sao_Paulo")
+_WEEK_TC = [
+    "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
+    "sexta-feira", "sábado", "domingo",
+]
+
+
+def _temporal_prefix() -> str:
+    """Bloco de contexto temporal injetado na user_message a cada turno.
+
+    O system_instruction também recebe a data, mas o modelo às vezes ignora —
+    repetir no próprio turno do usuário força a leitura imediata.
+    """
+    now = datetime.now(_SP_TZ_TC)
+    tomorrow = now + timedelta(days=1)
+    return (
+        f"[CONTEXTO DO SISTEMA — não responda sobre isto, apenas use como referência: "
+        f"agora são {now.strftime('%H:%M')} de {_WEEK_TC[now.weekday()]}, {now.strftime('%d/%m/%Y')}. "
+        f"Amanhã é {_WEEK_TC[tomorrow.weekday()]}, {tomorrow.strftime('%d/%m/%Y')}.]\n\n"
+    )
+
 
 
 def _get_client() -> genai.Client:
@@ -59,7 +84,7 @@ async def chat(phone: str, user_message: str, lead_name: str = "") -> tuple[str,
     client = _get_client()
     history = await get_chat_history(phone)
     contents = _history_to_contents(history)
-    contents.append(gtypes.Content(role="user", parts=[gtypes.Part.from_text(text=user_message)]))
+    contents.append(gtypes.Content(role="user", parts=[gtypes.Part.from_text(text=_temporal_prefix() + user_message)]))
 
     config = gtypes.GenerateContentConfig(
         system_instruction=get_system_prompt(),
