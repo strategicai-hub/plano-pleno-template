@@ -32,23 +32,29 @@ def _compute_time_greeting() -> str:
 
 
 def _compute_time_context_block() -> str:
-    """Bloco fixo no topo do prompt informando data/hora atual em São Paulo.
+    """Bloco autoritativo de data/hora atual em Sao Paulo.
 
-    Sem isso o modelo chuta o dia da semana e erra (ex.: dizia "sexta" num domingo).
+    Injetado no FINAL do prompt (modelos seguem melhor instrucoes no final).
+    Inclui hoje + ontem + amanha ja computados para evitar erros de calculo.
     """
-    now = datetime.now(_SP_TZ)
-    weekday_full = [
+    from datetime import timedelta
+    week = [
         "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
         "sexta-feira", "sábado", "domingo",
-    ][now.weekday()]
-    data_str = now.strftime("%d/%m/%Y")
-    hora_str = now.strftime("%H:%M")
+    ]
+    now = datetime.now(_SP_TZ)
+    yesterday = now - timedelta(days=1)
+    tomorrow = now + timedelta(days=1)
     return (
-        "## CONTEXTO TEMPORAL (autoritativo)\n"
-        f"- Hoje é {weekday_full}, {data_str}.\n"
-        f"- Hora atual em São Paulo: {hora_str}.\n"
-        "- Use SEMPRE estas informações ao mencionar dia, data ou hora. "
-        "Nunca invente outro dia da semana.\n"
+        "\n\n---\n\n## DATA E HORA ATUAIS - REGRA ABSOLUTA\n"
+        "Estas informações são AUTORITATIVAS. Substituem qualquer suposição sua. "
+        "Use-as sempre que for falar de dia, data, hoje, ontem, amanhã, semana ou horário:\n\n"
+        f"- AGORA (America/Sao_Paulo): {now.strftime('%d/%m/%Y %H:%M')}\n"
+        f"- HOJE é {week[now.weekday()]} ({now.strftime('%d/%m/%Y')}).\n"
+        f"- ONTEM foi {week[yesterday.weekday()]} ({yesterday.strftime('%d/%m/%Y')}).\n"
+        f"- AMANHÃ será {week[tomorrow.weekday()]} ({tomorrow.strftime('%d/%m/%Y')}).\n\n"
+        "PROIBIDO inventar outro dia da semana. Se for mencionar \"amanhã\", "
+        f"obrigatoriamente é {week[tomorrow.weekday()]}.\n"
     )
 
 
@@ -71,7 +77,7 @@ def build_prompt() -> str:
             f"Nichos disponíveis: {[p.stem for p in prompts_dir.glob('*.j2')]}"
         )
     template = env.get_template(template_file)
-    return _compute_time_context_block() + "\n" + template.render(**data)
+    return template.render(**data) + _compute_time_context_block()
 
 
 def get_system_prompt() -> str:
