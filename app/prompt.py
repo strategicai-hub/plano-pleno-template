@@ -31,6 +31,27 @@ def _compute_time_greeting() -> str:
     return "boa noite"
 
 
+def _compute_time_context_block() -> str:
+    """Bloco fixo no topo do prompt informando data/hora atual em São Paulo.
+
+    Sem isso o modelo chuta o dia da semana e erra (ex.: dizia "sexta" num domingo).
+    """
+    now = datetime.now(_SP_TZ)
+    weekday_full = [
+        "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
+        "sexta-feira", "sábado", "domingo",
+    ][now.weekday()]
+    data_str = now.strftime("%d/%m/%Y")
+    hora_str = now.strftime("%H:%M")
+    return (
+        "## CONTEXTO TEMPORAL (autoritativo)\n"
+        f"- Hoje é {weekday_full}, {data_str}.\n"
+        f"- Hora atual em São Paulo: {hora_str}.\n"
+        "- Use SEMPRE estas informações ao mencionar dia, data ou hora. "
+        "Nunca invente outro dia da semana.\n"
+    )
+
+
 def build_prompt() -> str:
     prompts_dir = Path(__file__).parent / "prompts"
     env = Environment(
@@ -50,7 +71,7 @@ def build_prompt() -> str:
             f"Nichos disponíveis: {[p.stem for p in prompts_dir.glob('*.j2')]}"
         )
     template = env.get_template(template_file)
-    return template.render(**data)
+    return _compute_time_context_block() + "\n" + template.render(**data)
 
 
 def get_system_prompt() -> str:
