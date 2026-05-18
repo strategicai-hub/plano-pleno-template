@@ -1,4 +1,4 @@
-# PLANO PLENO - Guia de Criacao de Novo Projeto
+﻿# PLANO PLENO - Guia de Criacao de Novo Projeto
 
 > **Nota:** este template estende o `plano-start-template` com follow-ups
 > automaticos, agendamento via Google Calendar e integracoes com sistemas
@@ -224,15 +224,36 @@ git commit -m "feat: dados do negocio preenchidos"
 git push
 ```
 
-### 2. Configurar webhook na UAZAPI
+### 2. Configurar webhooks na UAZAPI
 
-No painel UAZAPI, configure o webhook da instancia para:
+No painel UAZAPI, configure os webhooks da instancia usando o slug do cliente.
+
+#### SAI Comercial
+
+```text
+URL: https://comercial.strategicai.com.br/api/webhooks/uazapi/{slug}
+Eventos: messages, messages_update, connection
+Excluir: isgroupyes
 ```
-https://webhook-whatsapp.strategicai.com.br/{slug}
+
+#### Uniwoot temporario
+
+Use enquanto ainda houver clientes pendentes de migracao para o SAI Comercial.
+
+```text
+URL: https://api.uniwoot.dev/v1/whatsapp/e557c201-...
+Eventos: messages, messages_update
 ```
 
-> Este e o **unico passo manual** necessario.
+#### Webhook WhatsApp do bot
 
+```text
+URL: https://webhook-whatsapp.strategicai.com.br/{slug}
+Eventos: messages
+Excluir: wassentbyapi, isgroupyes
+```
+
+> O webhook do bot e o endpoint que entrega mensagens para este projeto. O filtro `wassentbyapi` evita loop com mensagens enviadas pela propria API; `isgroupyes` evita processamento de grupos.
 ### 3. (Opcional) Migrar historico do bot anterior
 
 Use isto **somente** quando o cliente ja tinha um chatbot rodando antes (n8n, langchain, etc) e voce quer que o bot novo conheca as conversas previas.

@@ -1,4 +1,4 @@
-# Instruções para o assistente de IA
+﻿# Instruções para o assistente de IA
 
 ## Estrutura do projeto
 
@@ -22,6 +22,30 @@ plano-start-template  →  plano-pleno-template  →  clientes do plano pleno
 - **start → pleno**: commits genéricos do start são cherry-picked aqui pelo `sync-to-derived.sh` do start (este repo está listado lá como derivado).
 - **pleno → clientes**: commits genéricos daqui são cherry-picked para os clientes listados abaixo pelo `scripts/sync-to-derived.sh` deste repo.
 
+## Webhooks UAZAPI obrigatorios
+
+Ao criar ou publicar um cliente derivado deste template, configurar estes webhooks na instancia UAZAPI, substituindo `{slug_cliente}` pelo `PROJECT_SLUG` do cliente:
+
+### SAI Comercial
+
+- URL: `https://comercial.strategicai.com.br/api/webhooks/uazapi/{slug_cliente}`
+- Eventos: `messages`, `messages_update`, `connection`
+- Excluir: `isgroupyes`
+
+### Uniwoot temporario
+
+Usar enquanto ainda houver clientes pendentes de migracao para o SAI Comercial.
+
+- URL: `https://api.uniwoot.dev/v1/whatsapp/e557c201-...`
+- Eventos: `messages`, `messages_update`
+
+### Webhook WhatsApp do bot
+
+- URL: `https://webhook-whatsapp.strategicai.com.br/{slug_cliente}`
+- Eventos: `messages`
+- Excluir: `wassentbyapi`, `isgroupyes`
+
+Checklist: confirmar que o slug e o mesmo do deploy, que o webhook do bot nao tem barra final e que `wassentbyapi` esta excluido para evitar loop de mensagens enviadas pela propria API.
 ## SDK Gemini obrigatório: `google-genai` + `thinking_budget=0`
 
 **Este template usa `google-genai` (SDK novo) com thinking tokens desabilitados.** É proibido voltar para `google-generativeai` (legado) ou esquecer o `thinking_config=ThinkingConfig(thinking_budget=0)` em qualquer `GenerateContentConfig`.

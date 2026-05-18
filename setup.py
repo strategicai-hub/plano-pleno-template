@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 PLANO START - Setup automatizado de novo projeto.
 
@@ -32,7 +32,7 @@ from pathlib import Path
 
 # ── constantes ───────────────────────────────────────────
 
-GITHUB_OWNER = "gustavocastilho-hub"
+GITHUB_OWNER = "strategicai-hub"
 TEMPLATE_REPO = f"{GITHUB_OWNER}/plano-pleno-template"
 SAI_TOOLS_REPO = f"{GITHUB_OWNER}/sai-tools"
 WEBHOOK_DOMAIN = "webhook-whatsapp.strategicai.com.br"
@@ -40,31 +40,54 @@ WEBHOOK_DOMAIN = "webhook-whatsapp.strategicai.com.br"
 PORTAINER_URL = "https://91.98.64.92:9443"
 PORTAINER_ENDPOINT_ID = 1
 
-# ── secrets locais (nunca vao para o git) ────────────────
+# ── secrets: ~/.claude/.env (primário) + .secrets.json (override local) ─────
+GLOBAL_ENV_FILE = Path.home() / ".claude" / ".env"
 _SECRETS_FILE = Path(__file__).parent / ".secrets.json"
 
 
 def _load_secrets() -> dict:
+    result = {}
+    # Primário: ~/.claude/.env
+    if GLOBAL_ENV_FILE.exists():
+        for line in GLOBAL_ENV_FILE.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, _, v = line.partition("=")
+                result[k.strip()] = v.strip()
+    # Alias: GITHUB_TOKEN -> GITHUB_PAT
+    if "GITHUB_TOKEN" in result and "GITHUB_PAT" not in result:
+        result["GITHUB_PAT"] = result["GITHUB_TOKEN"]
+    # Override: .secrets.json local (se existir)
     if _SECRETS_FILE.exists():
-        return json.loads(_SECRETS_FILE.read_text(encoding="utf-8"))
-    return {}
-
-
-SECRETS = _load_secrets()
+        result.update(json.loads(_SECRETS_FILE.read_text(encoding="utf-8")))
+    return result
 
 
 def _require_secret(key: str) -> str:
     val = SECRETS.get(key)
     if not val:
         sys.exit(
-            f"  ERRO: '{key}' ausente em {_SECRETS_FILE.name}.\n"
-            f"  Preencha esse arquivo com as chaves: "
-            f"GITHUB_PAT, PORTAINER_TOKEN, REDIS_PASSWORD, RABBITMQ_USER, RABBITMQ_PASS."
+            f"  ERRO: '{key}' nao encontrado.\n"
+            f"  Configure em ~/.claude/.env: {key}=valor"
         )
     return val
 
 
-GITHUB_PAT = _require_secret("GITHUB_PAT")
+def _get_github_pat() -> str:
+    val = SECRETS.get("GITHUB_PAT") or SECRETS.get("GITHUB_TOKEN")
+    if val:
+        return val
+    r = subprocess.run("gh auth token", shell=True, capture_output=True, text=True, check=False)
+    if r.returncode == 0 and r.stdout.strip():
+        return r.stdout.strip()
+    sys.exit(
+        "  ERRO: Token GitHub nao encontrado.\n"
+        "  Configure GITHUB_TOKEN em ~/.claude/.env ou execute: gh auth login"
+    )
+
+
+SECRETS = _load_secrets()
+GITHUB_PAT = _get_github_pat()
 PORTAINER_TOKEN = _require_secret("PORTAINER_TOKEN")
 REDIS_PASSWORD = _require_secret("REDIS_PASSWORD")
 
@@ -80,14 +103,17 @@ _SSL.verify_mode = ssl.CERT_NONE
 # ── helpers ──────────────────────────────────────────────
 
 
-def ask(prompt: str, default: str = "") -> str:
+def ask(prompt: str, default: str = "", required: bool = True) -> str:
     if default:
         text = input(f"  {prompt} [{default}]: ").strip()
         return text if text else default
     while True:
-        text = input(f"  {prompt}: ").strip()
+        hint = ": " if required else " [Enter para pular]: "
+        text = input(f"  {prompt}{hint}").strip()
         if text:
             return text
+        if not required:
+            return ""
         print("    (campo obrigatorio)")
 
 
@@ -205,6 +231,10 @@ def gh_actions_permissions(repo: str):
     )
     if r.returncode == 0:
         print("    Permissoes Actions - OK")
+    elif "disabled by the organization" in r.stderr or "disabled by the organization" in r.stdout:
+        print("    Bloqueado pela org. Configurar UMA VEZ em:")
+        print(f"    https://github.com/organizations/{GITHUB_OWNER}/settings/actions")
+        print("    -> Workflow permissions -> Read and write permissions")
     else:
         print(f"    AVISO: {r.stderr[:150]}")
 
@@ -220,6 +250,7 @@ def gh_secret(repo: str, name: str, value: str):
 
 
 def gh_package_public(repo: str):
+    time.sleep(5)  # aguarda registro do pacote no GHCR apos o build
     r = run(
         f"gh api -X PATCH /orgs/{GITHUB_OWNER}/packages/container/{repo} -f visibility=public",
         check=False,
@@ -227,7 +258,8 @@ def gh_package_public(repo: str):
     if r.returncode == 0:
         print("    GHCR publico - OK")
     else:
-        print(f"    AVISO: Faca manualmente: https://github.com/orgs/{GITHUB_OWNER}/packages/container/{repo}/settings")
+        print("    AVISO (nao critico): Portainer usa registry auth para imagens privadas.")
+        print(f"    Para tornar publica: https://github.com/orgs/{GITHUB_OWNER}/packages/container/{repo}/settings")
 
 
 def wait_build(repo: str, timeout: int = 300) -> bool:
@@ -316,7 +348,7 @@ def collect_inputs() -> dict:
 
     print("\n  --- TOKENS ---")
     uaz = ask("UAZAPI token")
-    gem = ask("GEMINI API key")
+    gem = ask("GEMINI API key (Enter para preencher depois no Portainer)", required=False)
     sid = ask("Google Sheet ID (ou 'pular')", "pular")
     gcal = ask("Google Calendar ID (ou 'pular')", "pular")
 
@@ -543,10 +575,23 @@ def print_done(data: dict, webhook_url: str | None):
   Painel: https://{WEBHOOK_DOMAIN}/{slug}/painel
 
   -------------------------------------------------------
-  UNICO PASSO MANUAL:
+  PASSO MANUAL UAZAPI:
 
-  >> Configurar webhook na UAZAPI para:
-     https://{WEBHOOK_DOMAIN}/{slug}
+  >> Configurar estes webhooks na instancia UAZAPI:
+
+  SAI Comercial:
+     URL: https://comercial.strategicai.com.br/api/webhooks/uazapi/{slug}
+     Eventos: messages, messages_update, connection
+     Excluir: isgroupyes
+
+  Uniwoot temporario:
+     URL: https://api.uniwoot.dev/v1/whatsapp/e557c201-...
+     Eventos: messages, messages_update
+
+  Webhook WhatsApp do bot:
+     URL: https://{WEBHOOK_DOMAIN}/{slug}
+     Eventos: messages
+     Excluir: wassentbyapi, isgroupyes
   -------------------------------------------------------
 """)
     if not webhook_url:
