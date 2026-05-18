@@ -138,20 +138,46 @@ async def schedule_followup(phone: str, next_follow_up_iso: str, stage: int = 1)
 
 
 async def get_followups_due(now_iso: str) -> list[dict]:
+    """Leads devidos para reativação. Exclui leads com appointment ativo
+    (booked/reminded com scheduled_at >= now) — quem já tem aula marcada não
+    deve ser reativado como lead frio."""
     async with aiosqlite.connect(settings.SQLITE_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             """
-            SELECT * FROM leads
-            WHERE next_follow_up IS NOT NULL
-              AND next_follow_up <= ?
-              AND COALESCE(status_conversa, '') != 'finalizado'
-              AND COALESCE(modo_mudo, 0) = 0
+            SELECT l.* FROM leads l
+            WHERE l.next_follow_up IS NOT NULL
+              AND l.next_follow_up <= ?
+              AND COALESCE(l.status_conversa, '') NOT IN ('finalizado', 'agendado')
+              AND COALESCE(l.modo_mudo, 0) = 0
+              AND NOT EXISTS (
+                  SELECT 1 FROM appointments a
+                  WHERE a.phone = l.phone
+                    AND a.scheduled_at >= ?
+                    AND a.status IN ('booked', 'reminded')
+              )
             """,
-            (now_iso,),
+            (now_iso, now_iso),
         )
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
+
+
+async def has_active_appointment(phone: str, now_iso: str) -> bool:
+    """True se o lead tem appointment futuro/atual ainda válido."""
+    async with aiosqlite.connect(settings.SQLITE_PATH) as db:
+        cur = await db.execute(
+            """
+            SELECT 1 FROM appointments
+            WHERE phone = ?
+              AND scheduled_at >= ?
+              AND status IN ('booked', 'reminded')
+            LIMIT 1
+            """,
+            (phone, now_iso),
+        )
+        row = await cur.fetchone()
+        return row is not None
 
 
 async def advance_followup_stage(

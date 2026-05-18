@@ -164,7 +164,8 @@ followups:
     inactive_hours: 24           # dispara apos N horas sem resposta do lead
     max_stages: 3                # ate N tentativas de reativacao
     day_of_week: "mon-fri"       # apenas dias uteis
-    cadence_minutes: 1           # frequencia do job (em minutos)
+    cadence_minutes: 15          # frequencia do job (em minutos)
+    hours: "9-18"                # janela horaria (cron `hour`) — evita disparo noturno
   appointment_reminder:
     enabled: true
     hours_before: 3              # envia lembrete X horas antes do agendamento

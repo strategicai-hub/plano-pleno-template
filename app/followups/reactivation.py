@@ -40,21 +40,28 @@ async def _seed_inactive_leads(now_tz: datetime, inactive_hours: int) -> None:
     """
     now_utc = now_tz.astimezone(timezone.utc)
     cutoff = (now_utc - timedelta(hours=inactive_hours)).isoformat()
+    now_iso = now_utc.isoformat()
 
     import aiosqlite
     async with aiosqlite.connect(settings.SQLITE_PATH) as conn:
         conn.row_factory = aiosqlite.Row
         cur = await conn.execute(
             """
-            SELECT phone FROM leads
-            WHERE next_follow_up IS NULL
-              AND last_customer_message_at IS NOT NULL
-              AND last_customer_message_at <= ?
-              AND COALESCE(status_conversa, '') != 'finalizado'
-              AND COALESCE(modo_mudo, 0) = 0
-              AND COALESCE(stage_follow_up, 0) = 0
+            SELECT l.phone FROM leads l
+            WHERE l.next_follow_up IS NULL
+              AND l.last_customer_message_at IS NOT NULL
+              AND l.last_customer_message_at <= ?
+              AND COALESCE(l.status_conversa, '') NOT IN ('finalizado', 'agendado')
+              AND COALESCE(l.modo_mudo, 0) = 0
+              AND COALESCE(l.stage_follow_up, 0) = 0
+              AND NOT EXISTS (
+                  SELECT 1 FROM appointments a
+                  WHERE a.phone = l.phone
+                    AND a.scheduled_at >= ?
+                    AND a.status IN ('booked', 'reminded')
+              )
             """,
-            (cutoff,),
+            (cutoff, now_iso),
         )
         rows = await cur.fetchall()
 

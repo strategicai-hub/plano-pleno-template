@@ -372,6 +372,8 @@ async def _process_message(msg: dict) -> None:
     if finalizado:
         await rds.set_block(phone)
         await rds.update_lead(phone, status_conversa="Finalizado")
+        # Espelha no SQLite — senão a reativação continua pegando esse lead.
+        await db.mark_finalizado(phone)
         log(_ok(f"[{phone}] Conversa marcada como finalizada"))
 
     await _update_summary_and_sheets(phone, lead.get("name", ""))
@@ -433,6 +435,8 @@ async def _handle_agendar(phone: str, nome: str, agendar: tuple[datetime, str]) 
             external_id=external_id,
             modalidade=modalidade or None,
         )
+        # Tira o lead da fila de reativação: já tem aula marcada.
+        await db.upsert_lead(phone, status_conversa="agendado", next_follow_up=None)
         log(_ok(f"[TOOL AGENDAR] Resultado: SUCESSO - source={source}, external_id={external_id}"))
     except Exception as e:
         log(_err(f"[TOOL AGENDAR] Resultado: EXCECAO - {e}"))

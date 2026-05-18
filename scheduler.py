@@ -42,12 +42,14 @@ async def main() -> None:
 
     r_cfg = cfg.get("reactivation") or {}
     if r_cfg.get("enabled", False):
-        minute = r_cfg.get("cadence_minutes", 1)
+        minute = r_cfg.get("cadence_minutes", 15)
         minute_expr = f"*/{int(minute)}" if int(minute) > 1 else "*"
+        hours_expr = r_cfg.get("hours", "9-18")
         scheduler.add_job(
             reactivation.run,
             CronTrigger(
                 day_of_week=r_cfg.get("day_of_week", "mon-fri"),
+                hour=hours_expr,
                 minute=minute_expr,
                 timezone=tz,
             ),
@@ -55,8 +57,8 @@ async def main() -> None:
             max_instances=1,
             coalesce=True,
         )
-        logger.info("job reactivation: cadencia %s min, dias %s",
-                    minute_expr, r_cfg.get("day_of_week", "mon-fri"))
+        logger.info("job reactivation: cadencia %s min, dias %s, horas %s",
+                    minute_expr, r_cfg.get("day_of_week", "mon-fri"), hours_expr)
 
     ar_cfg = cfg.get("appointment_reminder") or {}
     if ar_cfg.get("enabled", False):
