@@ -16,6 +16,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _truthy(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "sim"}
+    return bool(value)
+
+
+def _was_sent_by_api(msg: dict) -> bool:
+    return any(
+        _truthy(msg.get(key))
+        for key in (
+            "wasSentByApi",
+            "wassentbyapi",
+            "isSentByApi",
+            "sentByApi",
+            "fromApi",
+        )
+    )
+
+
 @router.post(settings.WEBHOOK_PATH)
 async def webhook(request: Request):
     payload = await request.json()
@@ -28,6 +49,8 @@ async def webhook(request: Request):
         return {"status": "ignored", "reason": f"track_source={track_source}"}
 
     from_me = msg.get("fromMe", False)
+    if from_me and _was_sent_by_api(msg):
+        return {"status": "ignored", "reason": "sent by api"}
 
     # Quando fromMe=True (atendente humano enviou pelo WhatsApp Web/celular),
     # sender_pn e o numero DA EMPRESA e chatid e o do LEAD (destinatario).
@@ -68,6 +91,10 @@ async def webhook(request: Request):
             phone, msg_type, json.dumps(payload)[:2000],
         )
         return {"status": "ignored", "reason": "no phone or unsupported message"}
+
+    if from_me and text and await rds.consume_outbound_echo(phone, text):
+        logger.info("Eco outbound de %s ignorado", phone)
+        return {"status": "ignored", "reason": "outbound echo"}
 
     if phone in settings.blocked_sender_phones_set:
         logger.info("Mensagem de %s ignorada (BLOCKED_SENDER_PHONES)", phone)

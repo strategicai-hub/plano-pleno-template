@@ -33,6 +33,10 @@ def alert_key(phone: str) -> str:
     return f"{_phone_ns(phone)}:alert"
 
 
+def outbound_echo_key(phone: str, digest: str) -> str:
+    return f"{_phone_ns(phone)}:outbound:{digest}"
+
+
 def followup_active_key(phone: str) -> str:
     return f"{_phone_ns(phone)}:followup:active"
 

@@ -35,6 +35,45 @@ def test_ignores_ia_source(client_and_published):
     assert pub == []
 
 
+
+def test_ignores_from_me_sent_by_api(client_and_published):
+    client, pub = client_and_published
+    r = client.post("/testslug", json={
+        "message": {
+            "fromMe": True,
+            "wasSentByApi": True,
+            "chatid": "5511999990000@c.us",
+            "text": "x",
+        }
+    })
+    assert r.status_code == 200
+    assert r.json()["status"] == "ignored"
+    assert r.json()["reason"] == "sent by api"
+    assert pub == []
+
+
+def test_ignores_from_me_outbound_echo(client_and_published, monkeypatch):
+    import app.webhook as webhook_mod
+
+    client, pub = client_and_published
+
+    async def fake_consume_outbound_echo(phone: str, text: str) -> bool:
+        return phone == "5511999990000" and text == "Conversa reiniciada."
+
+    monkeypatch.setattr(webhook_mod.rds, "consume_outbound_echo", fake_consume_outbound_echo)
+
+    r = client.post("/testslug", json={
+        "message": {
+            "fromMe": True,
+            "chatid": "5511999990000@c.us",
+            "text": "Conversa reiniciada.",
+        }
+    })
+    assert r.status_code == 200
+    assert r.json()["status"] == "ignored"
+    assert r.json()["reason"] == "outbound echo"
+    assert pub == []
+
 def test_ignores_when_no_phone(client_and_published):
     client, pub = client_and_published
     r = client.post("/testslug", json={"message": {"text": "oi"}})

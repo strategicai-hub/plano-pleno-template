@@ -1,4 +1,5 @@
 import json
+import hashlib
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -97,6 +98,30 @@ async def is_alert_sent(phone: str) -> bool:
     r = await get_redis()
     return await r.exists(keys.alert_key(phone)) == 1
 
+
+
+
+# --------------- ecos de mensagens enviadas pela propria API ---------------
+
+def _outbound_digest(text: str) -> str:
+    normalized = (text or "").strip()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
+
+
+async def mark_outbound_echo(phone: str, text: str, ttl: int = 120) -> None:
+    if not phone or not text:
+        return
+    r = await get_redis()
+    await r.set(keys.outbound_echo_key(phone, _outbound_digest(text)), "1", ex=ttl)
+
+
+async def consume_outbound_echo(phone: str, text: str) -> bool:
+    if not phone or not text:
+        return False
+    r = await get_redis()
+    key = keys.outbound_echo_key(phone, _outbound_digest(text))
+    deleted = await r.delete(key)
+    return deleted == 1
 
 # --------------- leads ---------------
 

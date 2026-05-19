@@ -4,6 +4,7 @@ import logging
 import httpx
 
 from app.config import settings
+from app.services import redis_service as rds
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ def _json_body(payload: dict) -> bytes:
 async def send_text(number: str, text: str, delay: int = 4000) -> dict:
     url = f"{settings.UAZAPI_BASE_URL}/send/text"
     payload = {"number": number, "text": text, "delay": delay}
+    await rds.mark_outbound_echo(number, text)
     client = _get_client()
     resp = await client.post(url, content=_json_body(payload), headers=_headers())
     resp.raise_for_status()
