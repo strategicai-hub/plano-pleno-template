@@ -68,6 +68,12 @@ def _strip_html(text: str) -> str:
     return re.sub(r"<[^>]+>", "", text)
 
 
+
+def _is_reset_confirmation(text: str) -> bool:
+    normalized = " ".join((text or "").split()).casefold().rstrip(".!")
+    return normalized == "conversa reiniciada"
+
+
 def log(line: str) -> None:
     logger.info(_strip_html(line))
     buf = _session_log_var.get(None)
@@ -204,6 +210,12 @@ async def _process_message(msg: dict) -> None:
         return
 
     # B) Mensagem propria -> bloqueia agente por 1h
+    # Excecao: eco da confirmacao automatica do /reset. Alguns payloads da
+    # UAZAPI chegam sem a flag wasSentByApi; nao podem travar o lead.
+    if from_me and msg_type in TEXT_TYPES and _is_reset_confirmation(msg_text):
+        logger.info("Eco de confirmacao de reset ignorado para %s", phone)
+        return
+
     if from_me:
         await rds.set_block(phone)
         logger.info("Humano assumiu chat %s - agente bloqueado por 1h", chat_id)
@@ -226,8 +238,11 @@ async def _process_message(msg: dict) -> None:
 
     # C) Verifica bloqueio ativo
     if await rds.is_blocked(phone):
-        logger.info("Agente bloqueado para %s - ignorando", chat_id)
-        return
+        if await rds.clear_stale_legacy_block(phone):
+            logger.info("Bloqueio legado vazio removido para %s", phone)
+        else:
+            logger.info("Agente bloqueado para %s - ignorando", chat_id)
+            return
 
     # D) Filtra grupos
     if _is_group(chat_id):
@@ -370,7 +385,7 @@ async def _process_message(msg: dict) -> None:
 
     # K) Pos-envio: finalizacao + resumo
     if finalizado:
-        await rds.set_block(phone)
+        await rds.set_block(phone, reason="finalizado")
         await rds.update_lead(phone, status_conversa="Finalizado")
         # Espelha no SQLite — senão a reativação continua pegando esse lead.
         await db.mark_finalizado(phone)

@@ -55,7 +55,7 @@ def test_ignores_from_me_sent_by_api(client_and_published):
 def test_ignores_from_me_outbound_echo(client_and_published, monkeypatch):
     import app.webhook as webhook_mod
 
-    client, pub = client_and_published
+    client, pub = client_and_published[:2]
 
     async def fake_consume_outbound_echo(phone: str, text: str) -> bool:
         return phone == "5511999990000" and text == "Conversa reiniciada."
@@ -73,6 +73,52 @@ def test_ignores_from_me_outbound_echo(client_and_published, monkeypatch):
     assert r.json()["status"] == "ignored"
     assert r.json()["reason"] == "outbound echo"
     assert pub == []
+
+
+def test_ignores_reset_confirmation_even_without_outbound_marker(client_and_published, monkeypatch):
+    import app.webhook as webhook_mod
+
+    client, pub = client_and_published[:2]
+
+    async def fake_consume_outbound_echo(phone: str, text: str) -> bool:
+        return False
+
+    monkeypatch.setattr(webhook_mod.rds, "consume_outbound_echo", fake_consume_outbound_echo)
+
+    r = client.post("/testslug", json={
+        "message": {
+            "fromMe": True,
+            "chatid": "5511999990000@c.us",
+            "text": "Conversa reiniciada.",
+        }
+    })
+    assert r.status_code == 200
+    assert r.json()["status"] == "ignored"
+    assert r.json()["reason"] == "reset confirmation echo"
+    assert pub == []
+
+
+@pytest.mark.asyncio
+async def test_consumer_does_not_block_reset_confirmation(monkeypatch):
+    import app.consumer as consumer_mod
+
+    blocked: list[str] = []
+
+    async def fake_set_block(phone: str, *args, **kwargs) -> None:
+        blocked.append(phone)
+
+    monkeypatch.setattr(consumer_mod.rds, "set_block", fake_set_block)
+
+    await consumer_mod._process_message({
+        "phone": "5511999990000",
+        "chat_id": "5511999990000@c.us",
+        "from_me": True,
+        "msg_type": "Conversation",
+        "msg": "Conversa reiniciada.",
+    })
+
+    assert blocked == []
+
 
 def test_ignores_when_no_phone(client_and_published):
     client, pub = client_and_published

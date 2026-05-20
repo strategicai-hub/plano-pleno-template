@@ -28,14 +28,38 @@ def _block_ttl_seconds() -> int:
 
 # --------------- bloqueio de agente ---------------
 
-async def set_block(phone: str, ttl: int | None = None) -> None:
+async def set_block(phone: str, ttl: int | None = None, reason: str = "human") -> None:
     r = await get_redis()
-    await r.set(keys.block_key(phone), "1", ex=ttl or _block_ttl_seconds())
+    await r.set(keys.block_key(phone), reason or "human", ex=ttl or _block_ttl_seconds())
 
 
 async def is_blocked(phone: str) -> bool:
     r = await get_redis()
     return await r.exists(keys.block_key(phone)) == 1
+
+
+
+async def clear_stale_legacy_block(phone: str) -> bool:
+    """Remove bloqueio antigo deixado por eco do /reset.
+
+    Versoes anteriores gravavam o bloqueio como "1". Se o reset apagou lead,
+    historico e buffer, mas um eco outbound criou esse bloqueio legado logo
+    depois, a proxima mensagem do lead nao pode ficar presa ate o dia seguinte.
+    """
+    r = await get_redis()
+    block_key = keys.block_key(phone)
+    value = await r.get(block_key)
+    if value != "1":
+        return False
+
+    has_history = await r.llen(keys.history_key(phone)) > 0
+    has_lead = await r.exists(keys.lead_key(phone)) == 1
+    has_buffer = await r.exists(keys.buffer_key(phone)) == 1
+    if has_history or has_lead or has_buffer:
+        return False
+
+    await r.delete(block_key)
+    return True
 
 
 # --------------- buffer de mensagens (debounce) ---------------

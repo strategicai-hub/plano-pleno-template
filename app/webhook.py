@@ -16,6 +16,23 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+
+def _normalize_text(value) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ("text", "body", "content", "conversation"):
+            text = _normalize_text(value.get(key, ""))
+            if text:
+                return text
+    return ""
+
+
+def _is_reset_confirmation(text: str) -> bool:
+    normalized = " ".join((text or "").split()).casefold().rstrip(".!")
+    return normalized == "conversa reiniciada"
+
+
 def _truthy(value) -> bool:
     if isinstance(value, bool):
         return value
@@ -64,7 +81,7 @@ async def webhook(request: Request):
     push_name = msg.get("senderName", "")
 
     # Detecta tipo e conteudo da mensagem
-    text = msg.get("text", "")
+    text = _normalize_text(msg.get("text", ""))
     msg_type_raw = msg.get("messageType", "")
 
     if text:
@@ -95,6 +112,10 @@ async def webhook(request: Request):
     if from_me and text and await rds.consume_outbound_echo(phone, text):
         logger.info("Eco outbound de %s ignorado", phone)
         return {"status": "ignored", "reason": "outbound echo"}
+
+    if from_me and text and _is_reset_confirmation(text):
+        logger.info("Confirmacao de reset outbound de %s ignorada", phone)
+        return {"status": "ignored", "reason": "reset confirmation echo"}
 
     if phone in settings.blocked_sender_phones_set:
         logger.info("Mensagem de %s ignorada (BLOCKED_SENDER_PHONES)", phone)
