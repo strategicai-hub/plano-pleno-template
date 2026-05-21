@@ -11,6 +11,7 @@ Decisões importantes:
 """
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Any, Optional
@@ -22,6 +23,7 @@ from app.client_data import load_client_data
 from app.config import settings
 from app.prompt import get_system_prompt
 from app.services.redis_service import get_chat_history, append_chat_history
+from app.services.sai_metrics import log_message_async
 
 logger = logging.getLogger(__name__)
 
@@ -93,15 +95,26 @@ async def chat(phone: str, user_message: str, lead_name: str = "") -> tuple[str,
         thinking_config=gtypes.ThinkingConfig(include_thoughts=False),
     )
 
+    t0 = time.monotonic()
     response = await asyncio.to_thread(
         client.models.generate_content,
         model=_MODEL,
         contents=contents,
         config=config,
     )
+    latency_ms = int((time.monotonic() - t0) * 1000)
 
     ai_text = (response.text or "").strip()
     tokens = _usage_tokens(response)
+    log_message_async(
+        lead_phone=phone,
+        direction="INBOUND",
+        kind="CHAT",
+        model=_MODEL,
+        input_tokens=tokens[0],
+        output_tokens=tokens[1],
+        latency_ms=latency_ms,
+    )
 
     await append_chat_history(phone, "user", user_message)
     if ai_text:
@@ -110,8 +123,9 @@ async def chat(phone: str, user_message: str, lead_name: str = "") -> tuple[str,
     return ai_text, tokens
 
 
-async def transcribe_audio(audio_bytes: bytes) -> str:
+async def transcribe_audio(audio_bytes: bytes, phone: str = "") -> str:
     client = _get_client()
+    t0 = time.monotonic()
     response = await asyncio.to_thread(
         client.models.generate_content,
         model=_MODEL,
@@ -130,6 +144,17 @@ async def transcribe_audio(audio_bytes: bytes) -> str:
             temperature=0.2,
             thinking_config=gtypes.ThinkingConfig(include_thoughts=False),
         ),
+    )
+    latency_ms = int((time.monotonic() - t0) * 1000)
+    inp, out, _ = _usage_tokens(response)
+    log_message_async(
+        lead_phone=phone,
+        direction="INBOUND",
+        kind="TRANSCRIPTION",
+        model=_MODEL,
+        input_tokens=inp,
+        output_tokens=out,
+        latency_ms=latency_ms,
     )
     return (response.text or "").strip()
 
@@ -160,6 +185,7 @@ async def generate_summary(phone: str) -> str:
 
     client = _get_client()
     try:
+        t0 = time.monotonic()
         response = await asyncio.to_thread(
             client.models.generate_content,
             model=_MODEL,
@@ -169,6 +195,17 @@ async def generate_summary(phone: str) -> str:
                 max_output_tokens=150,
                 thinking_config=gtypes.ThinkingConfig(include_thoughts=False),
             ),
+        )
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        inp, out, _ = _usage_tokens(response)
+        log_message_async(
+            lead_phone=phone,
+            direction="INBOUND",
+            kind="SUMMARY",
+            model=_MODEL,
+            input_tokens=inp,
+            output_tokens=out,
+            latency_ms=latency_ms,
         )
         return (response.text or "").strip()
     except Exception:
@@ -221,6 +258,7 @@ async def generate_reactivation_message(
 
     client = _get_client()
     try:
+        t0 = time.monotonic()
         response = await asyncio.to_thread(
             client.models.generate_content,
             model=_MODEL,
@@ -231,14 +269,26 @@ async def generate_reactivation_message(
                 thinking_config=gtypes.ThinkingConfig(include_thoughts=False),
             ),
         )
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        inp, out, _ = _usage_tokens(response)
+        log_message_async(
+            lead_phone=phone,
+            direction="OUTBOUND",
+            kind="REACTIVATION",
+            model=_MODEL,
+            input_tokens=inp,
+            output_tokens=out,
+            latency_ms=latency_ms,
+        )
         return (response.text or "").strip()
     except Exception:
         logger.exception("Erro ao gerar mensagem de reativacao para %s", phone)
         return ""
 
 
-async def analyze_image(image_bytes: bytes) -> str:
+async def analyze_image(image_bytes: bytes, phone: str = "") -> str:
     client = _get_client()
+    t0 = time.monotonic()
     response = await asyncio.to_thread(
         client.models.generate_content,
         model=_MODEL,
@@ -255,5 +305,16 @@ async def analyze_image(image_bytes: bytes) -> str:
             temperature=0.2,
             thinking_config=gtypes.ThinkingConfig(include_thoughts=False),
         ),
+    )
+    latency_ms = int((time.monotonic() - t0) * 1000)
+    inp, out, _ = _usage_tokens(response)
+    log_message_async(
+        lead_phone=phone,
+        direction="INBOUND",
+        kind="IMAGE_ANALYSIS",
+        model=_MODEL,
+        input_tokens=inp,
+        output_tokens=out,
+        latency_ms=latency_ms,
     )
     return (response.text or "").strip()

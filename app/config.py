@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     # Google Gemini
     GEMINI_API_KEY: str = ""
 
+    # SAI Comercial — telemetria fire-and-forget de mensagens IA
+    # Se SAI_TENANT_ID e SAI_INGEST_SECRET ficarem vazios, telemetria fica desligada.
+    SAI_BASE_URL: str = "https://comercial.strategicai.com.br"
+    SAI_INGEST_SECRET: str = ""
+    SAI_TENANT_ID: str = ""
+
     # UAZAPI
     UAZAPI_BASE_URL: str = "https://strategicai.uazapi.com"
     UAZAPI_TOKEN: str = ""
