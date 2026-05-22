@@ -91,7 +91,6 @@ async def chat(phone: str, user_message: str, lead_name: str = "") -> tuple[str,
     config = gtypes.GenerateContentConfig(
         system_instruction=get_system_prompt(),
         temperature=0.4,
-        max_output_tokens=300,
         thinking_config=gtypes.ThinkingConfig(include_thoughts=False),
     )
 
