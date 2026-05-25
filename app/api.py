@@ -211,37 +211,60 @@ const phoneEl = document.getElementById('phone');
 const inputEl = document.getElementById('input');
 const sendBtn = document.getElementById('send');
 
-function escapeHtml(s) {{
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+function appendPartContent(wrap, p) {{
+  if (p.type === 'image') {{
+    const img = document.createElement('img');
+    img.src = p.preview_url || p.content;
+    img.alt = p.tag || 'Imagem enviada pelo bot';
+    img.loading = 'lazy';
+    img.onerror = () => {{
+      if (p.preview_url && p.content && img.getAttribute('src') !== p.content) {{
+        img.src = p.content;
+        return;
+      }}
+      const a = document.createElement('a');
+      a.href = p.content;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.textContent = 'Abrir imagem';
+      wrap.replaceChild(a, img);
+    }};
+    wrap.appendChild(img);
+  }} else if (p.type === 'document' || p.type === 'video') {{
+    const a = document.createElement('a');
+    a.href = p.preview_url || p.content;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.textContent = 'Abrir ' + p.type;
+    wrap.appendChild(a);
+  }} else {{
+    const para = document.createElement('p');
+    para.textContent = p.content;
+    wrap.appendChild(para);
+  }}
 }}
 
 function addBubble(role, parts, opts) {{
   opts = opts || {{}};
-  const wrap = document.createElement('div');
-  wrap.className = 'msg ' + role;
-  for (const p of parts) {{
-    if (p.type === 'image') {{
-      const img = document.createElement('img');
-      img.src = p.content;
-      wrap.appendChild(img);
-    }} else if (p.type === 'document' || p.type === 'video') {{
-      const a = document.createElement('a');
-      a.href = p.content; a.target = '_blank'; a.textContent = '📎 ' + p.type + ' (clique)';
-      wrap.appendChild(a);
-    }} else {{
-      const para = document.createElement('p');
-      para.innerHTML = escapeHtml(p.content);
-      wrap.appendChild(para);
+  if (!Array.isArray(parts)) {{
+    parts = [{{type: 'text', content: String(parts || '')}}];
+  }}
+  const cleanParts = parts.filter((p) => p && p.content);
+  if (!cleanParts.length) return;
+
+  cleanParts.forEach((p, index) => {{
+    const wrap = document.createElement('div');
+    wrap.className = 'msg ' + role;
+    appendPartContent(wrap, p);
+    if (opts.flags && index === cleanParts.length - 1) {{
+      const meta = document.createElement('div');
+      meta.className = 'ts';
+      meta.textContent = opts.flags;
+      wrap.appendChild(meta);
     }}
-  }}
-  if (opts.flags) {{
-    const meta = document.createElement('div');
-    meta.className = 'ts';
-    meta.textContent = opts.flags;
-    wrap.appendChild(meta);
-  }}
-  chatEl.appendChild(wrap);
-  const clr = document.createElement('div'); clr.className = 'clearfix'; chatEl.appendChild(clr);
+    chatEl.appendChild(wrap);
+    const clr = document.createElement('div'); clr.className = 'clearfix'; chatEl.appendChild(clr);
+  }});
   chatEl.scrollTop = chatEl.scrollHeight;
 }}
 
