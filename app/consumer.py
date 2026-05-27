@@ -8,7 +8,8 @@ import logging
 import re
 import time
 from contextvars import ContextVar
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import redis as redis_sync
 
@@ -145,7 +146,13 @@ def _parse_ai_response(text: str) -> tuple[list[dict], bool, bool, tuple[datetim
         iso_str = match_a.group(1).strip()
         modalidade = (match_a.group(2) or "").strip()
         try:
-            agendar = (datetime.fromisoformat(iso_str), modalidade)
+            _dt = datetime.fromisoformat(iso_str)
+            if _dt.tzinfo is None:
+                # AGENDAR vem como horario local (SP) sem offset; anexa o fuso
+                # do scheduler e converte para UTC antes de persistir, senao o
+                # scheduler interpreta como UTC e dispara o lembrete adiantado.
+                _dt = _dt.replace(tzinfo=ZoneInfo(settings.SCHEDULER_TZ)).astimezone(timezone.utc)
+            agendar = (_dt, modalidade)
         except ValueError:
             logger.warning("AGENDAR com formato invalido: %r", iso_str)
         text = re.sub(r"\[AGENDAR=[^\]]+\]", "", text).strip()

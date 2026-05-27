@@ -32,6 +32,28 @@ def _now_tz() -> datetime:
     return datetime.now(ZoneInfo(settings.SCHEDULER_TZ))
 
 
+def _within_business_hours(now_tz: datetime) -> bool:
+    data = load_client_data() or {}
+    bh = (data.get("appointments") or {}).get("business_hours") or {}
+    weekday = now_tz.weekday()  # 0=Mon … 6=Sun
+    if weekday < 5:
+        ranges = bh.get("mon_fri") or []
+    elif weekday == 5:
+        ranges = bh.get("sat") or []
+    else:
+        ranges = bh.get("sun") or []
+    if not ranges:
+        return False
+    current = now_tz.time()
+    for r in ranges:
+        start_s, end_s = r.split("-")
+        start = datetime.strptime(start_s, "%H:%M").time()
+        end = datetime.strptime(end_s, "%H:%M").time()
+        if start <= current <= end:
+            return True
+    return False
+
+
 async def run() -> None:
     cfg = _cfg()
     if not cfg.get("enabled", False):
@@ -39,6 +61,11 @@ async def run() -> None:
 
     hours_before = int(cfg.get("hours_before", 3))
     now_tz = _now_tz()
+
+    if not _within_business_hours(now_tz):
+        logger.debug("appointment_reminder: fora do horário comercial, pulando")
+        return
+
     until_tz = now_tz + timedelta(hours=hours_before)
 
     now_iso = now_tz.astimezone(timezone.utc).isoformat()
