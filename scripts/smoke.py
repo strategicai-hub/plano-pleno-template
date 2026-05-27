@@ -97,7 +97,7 @@ async def check_sqlite() -> None:
             _fail(f"upsert_lead/get_lead inconsistente: {lead!r}")
 
         now = datetime.now(timezone.utc)
-        appt_id = await db.schedule_appointment(
+        appt_id, _created = await db.schedule_appointment(
             phone="5511999990000",
             scheduled_at_iso=(now + timedelta(hours=1)).isoformat(),
             source="google_calendar",

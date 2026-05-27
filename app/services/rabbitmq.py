@@ -70,6 +70,13 @@ async def consume(callback: Callable[[dict], Awaitable[None]]) -> None:
             # consumer.py funcione: a primeira msg do lead dorme DEBOUNCE_SECONDS
             # enquanto as seguintes apenas empilham no buffer do Redis. Sem isso
             # cada msg vira um processamento serial com sua propria chamada de IA.
+            #
+            # Durabilidade no redeploy: o ack acontece antes do processamento,
+            # mas as mensagens vivem no buffer do Redis (com TTL) e sao
+            # recuperadas no startup por _recover_orphan_buffers() — entao um
+            # restart durante o sleep do debounce nao perde a mensagem.
+            # Reentrega da UAZAPI e neutralizada pela dedup por message_id no
+            # consumer (rds.mark_processed).
             try:
                 body = json.loads(message.body.decode())
                 await message.ack()

@@ -138,6 +138,16 @@ async def webhook(request: Request):
         logger.info("[%s] Reset instantaneo via webhook", phone)
         return {"status": "reset"}
 
+    # id da mensagem na UAZAPI — usado para idempotência no consumer (dedup de
+    # reentrega). Campos variam conforme versão/payload; pega o primeiro válido.
+    message_id = (
+        msg.get("id")
+        or msg.get("messageid")
+        or msg.get("messageId")
+        or (msg.get("key") or {}).get("id")
+        or ""
+    )
+
     queue_message = {
         "phone": phone,
         "push_name": push_name,
@@ -147,6 +157,7 @@ async def webhook(request: Request):
         "chat_id": chat_id,
         "media_url": media_url,
         "caption": caption,
+        "message_id": message_id,
         "raw_message": msg,
     }
 

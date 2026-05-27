@@ -1,6 +1,9 @@
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from app.consumer import _parse_ai_response
+
+_SP = ZoneInfo("America/Sao_Paulo")
 
 
 def test_text_simple():
@@ -66,7 +69,8 @@ def test_agendar_flag_with_modalidade():
     )
     assert agendar is not None
     dt, modalidade = agendar
-    assert dt == datetime(2025, 11, 12, 19, 0)
+    # _parse_ai_response interpreta a hora no fuso de São Paulo e retorna tz-aware.
+    assert dt == datetime(2025, 11, 12, 19, 0, tzinfo=_SP)
     assert modalidade == "Boxe tradicional"
     assert "[AGENDAR=" not in parts[0]["content"]
 
@@ -77,7 +81,7 @@ def test_agendar_flag_without_modalidade():
     )
     assert agendar is not None
     dt, modalidade = agendar
-    assert dt == datetime(2025, 11, 12, 19, 0)
+    assert dt == datetime(2025, 11, 12, 19, 0, tzinfo=_SP)
     assert modalidade == ""
     assert "[AGENDAR=" not in parts[0]["content"]
 

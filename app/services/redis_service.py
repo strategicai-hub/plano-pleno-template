@@ -64,9 +64,55 @@ async def clear_stale_legacy_block(phone: str) -> bool:
 
 # --------------- buffer de mensagens (debounce) ---------------
 
+def _buffer_ttl_seconds() -> int:
+    """TTL do buffer de debounce.
+
+    Garante autolimpeza se a task que deveria consumir o buffer morrer (ex.:
+    redeploy/restart do worker durante o sleep do debounce, exceção no Gemini,
+    blip no Redis). Sem isso, o buffer ficaria pendurado e toda mensagem
+    seguinte do lead veria count>1 e sairia calada — bot mudo permanente.
+    Folga de 60s sobre a janela de debounce, mínimo 90s.
+    """
+    return max(int(settings.DEBOUNCE_SECONDS) + 60, 90)
+
+
 async def push_buffer(phone: str, text: str) -> int:
     r = await get_redis()
-    return await r.rpush(keys.buffer_key(phone), text)
+    key = keys.buffer_key(phone)
+    async with r.pipeline(transaction=True) as pipe:
+        pipe.rpush(key, text)
+        pipe.expire(key, _buffer_ttl_seconds())
+        results = await pipe.execute()
+    return results[0]  # tamanho da lista após o rpush
+
+
+async def pop_buffer(phone: str) -> list[str]:
+    """Lê e apaga o buffer atomicamente (LRANGE + DELETE em MULTI/EXEC).
+
+    Elimina a janela de corrida do antigo get_buffer()+delete_buffer(): sem
+    isso, uma terceira mensagem podia chegar entre o get e o delete, recriar o
+    buffer com count=1 e disparar um reprocessamento duplicado.
+    """
+    r = await get_redis()
+    key = keys.buffer_key(phone)
+    async with r.pipeline(transaction=True) as pipe:
+        pipe.lrange(key, 0, -1)
+        pipe.delete(key)
+        results = await pipe.execute()
+    return results[0] or []
+
+
+async def scan_buffer_phones() -> list[str]:
+    """Lista os phones que têm buffer de debounce pendente no Redis.
+
+    Usado na recuperação de buffers órfãos no startup do worker: mensagens cuja
+    task de debounce foi interrompida por redeploy/restart deixam o buffer no
+    Redis (com TTL), mas ninguém as reprocessaria — esta varredura recupera."""
+    r = await get_redis()
+    phones: list[str] = []
+    async for key in r.scan_iter(match=keys.buffer_scan_pattern(), count=100):
+        phones.append(keys.phone_from_buffer_key(key))
+    return phones
 
 
 async def get_buffer(phone: str) -> list[str]:
@@ -77,6 +123,20 @@ async def get_buffer(phone: str) -> list[str]:
 async def delete_buffer(phone: str) -> None:
     r = await get_redis()
     await r.delete(keys.buffer_key(phone))
+
+
+async def mark_processed(message_id: str, ttl: int = 300) -> bool:
+    """Marca um message_id como processado. Retorna True se foi marcado agora
+    (primeira vez), False se já existia (reentrega da UAZAPI / retry HTTP).
+
+    Usa SET NX para fechar a corrida entre duas entregas simultâneas do mesmo
+    evento.
+    """
+    if not message_id:
+        return True
+    r = await get_redis()
+    ok = await r.set(keys.processed_key(message_id), "1", ex=ttl, nx=True)
+    return bool(ok)
 
 
 # --------------- historico de chat (Gemini) ---------------

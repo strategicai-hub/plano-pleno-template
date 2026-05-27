@@ -41,6 +41,11 @@ def followup_active_key(phone: str) -> str:
     return f"{_phone_ns(phone)}:followup:active"
 
 
+def processed_key(message_id: str) -> str:
+    """Chave de idempotência por message_id da UAZAPI (dedup de reentrega)."""
+    return f"{settings.PROJECT_SLUG}:processed:{message_id}"
+
+
 def session_log_key() -> str:
     return f"{settings.PROJECT_SLUG}:logs"
 
@@ -62,4 +67,13 @@ def phone_from_lead_key(key: str) -> str:
 
 def phone_from_history_key(key: str) -> str:
     suffix = f"--{settings.PROJECT_SLUG}:history"
+    return key[: -len(suffix)] if key.endswith(suffix) else key
+
+
+def buffer_scan_pattern() -> str:
+    return f"*--{settings.PROJECT_SLUG}:buffer"
+
+
+def phone_from_buffer_key(key: str) -> str:
+    suffix = f"--{settings.PROJECT_SLUG}:buffer"
     return key[: -len(suffix)] if key.endswith(suffix) else key

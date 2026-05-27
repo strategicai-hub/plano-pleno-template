@@ -213,9 +213,62 @@ async def schedule_appointment(
     source: str,
     external_id: Optional[str] = None,
     modalidade: Optional[str] = None,
-) -> int:
-    """Registra um agendamento. `source` = 'google_calendar' | 'external_system'."""
+) -> tuple[int, bool]:
+    """Registra um agendamento de forma idempotente.
+
+    Se já existe um appointment ativo (status booked/reminded) para o mesmo
+    `phone` num horário a ±5 min do solicitado, NÃO cria outra linha — atualiza
+    a existente (modalidade/external_id) e a retorna. Isso evita linhas
+    duplicadas que geram múltiplos lembretes idênticos quando a IA chama o
+    handler de agendamento / emite `[AGENDAR=...]` em mais de uma tentativa/turno.
+
+    Retorna (appointment_id, created) — `created=False` quando reaproveitou uma
+    linha existente, permitindo ao chamador não disparar alerta de equipe 2x.
+    `source` = 'google_calendar' | 'external_system' | etc.
+    """
+    from datetime import datetime as _dt, timedelta as _td
+
+    # Janela de ±5 min para considerar "mesmo agendamento" (tolera segundos /
+    # pequenas variações de parsing da hora informada pela IA).
+    lo_iso = scheduled_at_iso
+    hi_iso = scheduled_at_iso
+    try:
+        base = _dt.fromisoformat(scheduled_at_iso)
+        lo_iso = (base - _td(minutes=5)).isoformat()
+        hi_iso = (base + _td(minutes=5)).isoformat()
+    except ValueError:
+        pass
+
     async with aiosqlite.connect(settings.SQLITE_PATH) as db:
+        cur = await db.execute(
+            """
+            SELECT id FROM appointments
+            WHERE phone = ?
+              AND status IN ('booked', 'reminded')
+              AND scheduled_at BETWEEN ? AND ?
+            ORDER BY id LIMIT 1
+            """,
+            (phone, lo_iso, hi_iso),
+        )
+        existing = await cur.fetchone()
+        if existing:
+            appt_id = existing[0]
+            await db.execute(
+                """
+                UPDATE appointments
+                SET modalidade = COALESCE(?, modalidade),
+                    external_id = COALESCE(?, external_id)
+                WHERE id = ?
+                """,
+                (modalidade, external_id, appt_id),
+            )
+            await db.commit()
+            logger.info(
+                "schedule_appointment: reaproveitando appointment_id=%s para %s (dedup)",
+                appt_id, phone,
+            )
+            return appt_id, False
+
         cur = await db.execute(
             """
             INSERT INTO appointments
@@ -225,7 +278,7 @@ async def schedule_appointment(
             (phone, scheduled_at_iso, source, external_id, modalidade, _now_iso()),
         )
         await db.commit()
-        return cur.lastrowid or 0
+        return cur.lastrowid or 0, True
 
 
 async def get_appointments_for_reminder(

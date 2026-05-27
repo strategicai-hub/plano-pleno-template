@@ -69,7 +69,7 @@ async def test_schedule_appointment_and_reminder(temp_db):
     scheduled = (now + timedelta(hours=1)).isoformat()
     until = (now + timedelta(hours=3)).isoformat()
 
-    appt_id = await db_mod.schedule_appointment(
+    appt_id, created = await db_mod.schedule_appointment(
         phone="5511999990000",
         scheduled_at_iso=scheduled,
         source="google_calendar",
@@ -77,6 +77,7 @@ async def test_schedule_appointment_and_reminder(temp_db):
         modalidade="Boxe",
     )
     assert appt_id > 0
+    assert created is True
 
     due = await db_mod.get_appointments_for_reminder(until_iso=until, now_iso=now.isoformat())
     assert len(due) == 1
@@ -86,3 +87,32 @@ async def test_schedule_appointment_and_reminder(temp_db):
 
     due_again = await db_mod.get_appointments_for_reminder(until_iso=until, now_iso=now.isoformat())
     assert due_again == []
+
+
+async def test_schedule_appointment_idempotente(temp_db):
+    """Dois agendamentos para o mesmo phone+horário (±5min) não duplicam linha —
+    evita lembretes idênticos repetidos."""
+    now = datetime.now(timezone.utc)
+    scheduled = (now + timedelta(hours=2)).isoformat()
+    until = (now + timedelta(hours=3)).isoformat()
+
+    id1, created1 = await db_mod.schedule_appointment(
+        phone="5511988887777",
+        scheduled_at_iso=scheduled,
+        source="google_calendar",
+        modalidade="Boxe",
+    )
+    near = (now + timedelta(hours=2, minutes=2)).isoformat()
+    id2, created2 = await db_mod.schedule_appointment(
+        phone="5511988887777",
+        scheduled_at_iso=near,
+        source="google_calendar",
+        modalidade="Boxe",
+    )
+
+    assert created1 is True
+    assert created2 is False
+    assert id1 == id2
+
+    due = await db_mod.get_appointments_for_reminder(until_iso=until, now_iso=now.isoformat())
+    assert len(due) == 1

@@ -198,6 +198,7 @@ async def _process_message(msg: dict) -> None:
     msg_type = msg.get("msg_type", "")
     msg_text = msg.get("msg", "")
     push_name = msg.get("push_name", "")
+    message_id = msg.get("message_id", "")
 
     # A) Descarta mensagens invalidas / nao suportadas
     if not phone or msg_type in ("", "Unknown"):
@@ -241,6 +242,14 @@ async def _process_message(msg: dict) -> None:
             log(_err(f"[{phone}] Falha ao confirmar reset via WhatsApp: {e}"))
             logger.exception("Erro ao confirmar reset para %s", phone)
         _save_session_log(phone)
+        return
+
+    # B.2) Idempotência por message_id — a UAZAPI pode reentregar o mesmo
+    # evento (retry HTTP, reconexão de socket). Sem isso, uma reentrega que
+    # chega após a janela de debounce vira um 2º processamento e uma resposta
+    # duplicada. Fica DEPOIS do /reset (que deve sempre passar).
+    if message_id and not await rds.mark_processed(message_id):
+        logger.info("Mensagem %s ja processada (reentrega) - ignorando", message_id)
         return
 
     # C) Verifica bloqueio ativo
@@ -324,10 +333,20 @@ async def _process_message(msg: dict) -> None:
     if phone not in settings.debounce_bypass_set:
         await asyncio.sleep(settings.DEBOUNCE_SECONDS)
 
-    messages = await rds.get_buffer(phone)
-    await rds.delete_buffer(phone)
-
+    messages = await rds.pop_buffer(phone)
     unified_msg = "\n".join(messages)
+
+    await _run_ai_and_reply(phone, unified_msg, lead, push_name)
+
+
+async def _run_ai_and_reply(phone: str, unified_msg: str, lead: dict, push_name: str) -> None:
+    """Processa a mensagem unificada com a IA e responde via WhatsApp.
+
+    Extraído de _process_message para ser reutilizável pela recuperação de
+    buffers órfãos no startup (mensagens cujo debounce foi interrompido por
+    redeploy/restart do worker)."""
+    if not unified_msg:
+        return
     log(_msg(f"[{phone} - {push_name}] {unified_msg[:300]}"))
 
     # G) Processamento com IA (com retry)
@@ -450,7 +469,7 @@ async def _handle_agendar(phone: str, nome: str, agendar: tuple[datetime, str]) 
         )
         if not external_id:
             log(_warn(f"[TOOL AGENDAR] Resultado: sem external_id — backend {source} pode estar indisponivel"))
-        await db.schedule_appointment(
+        _appt_id, created = await db.schedule_appointment(
             phone=phone,
             scheduled_at_iso=start_at.isoformat(),
             source=source,
@@ -459,7 +478,7 @@ async def _handle_agendar(phone: str, nome: str, agendar: tuple[datetime, str]) 
         )
         # Tira o lead da fila de reativação: já tem aula marcada.
         await db.upsert_lead(phone, status_conversa="agendado", next_follow_up=None)
-        log(_ok(f"[TOOL AGENDAR] Resultado: SUCESSO - source={source}, external_id={external_id}"))
+        log(_ok(f"[TOOL AGENDAR] Resultado: SUCESSO - source={source}, external_id={external_id}, created={created}"))
     except Exception as e:
         log(_err(f"[TOOL AGENDAR] Resultado: EXCECAO - {e}"))
         logger.exception("Erro ao registrar agendamento para %s", phone)
@@ -498,6 +517,36 @@ async def _update_summary_and_sheets(phone: str, name: str) -> None:
         logger.exception("Erro ao atualizar sheets para %s: %s", phone, e)
 
 
+async def _recover_orphan_buffers() -> None:
+    """Reprocessa buffers de debounce que ficaram órfãos por redeploy/restart.
+
+    Quando o worker reinicia durante o sleep do debounce, a task que iria
+    consumir o buffer morre, mas o buffer (com as mensagens do lead) continua
+    no Redis. Sem isto, o lead ficaria sem resposta até mandar outra mensagem.
+    Roda uma vez no startup do consumer."""
+    try:
+        phones = await rds.scan_buffer_phones()
+    except Exception:
+        logger.exception("Falha ao varrer buffers órfãos no startup")
+        return
+    if not phones:
+        return
+    logger.info("Recuperando %d buffer(s) órfão(s) de debounce", len(phones))
+    for phone in phones:
+        try:
+            messages = await rds.pop_buffer(phone)
+            if not messages:
+                continue
+            lead = await rds.get_lead(phone) or {"phone": phone, "name": ""}
+            push_name = lead.get("name", "")
+            _begin_session_log()
+            log(_warn(f"[{phone}] Recuperando buffer órfão pós-restart ({len(messages)} msg)"))
+            await _run_ai_and_reply(phone, "\n".join(messages), lead, push_name)
+        except Exception:
+            logger.exception("Erro ao recuperar buffer órfão de %s", phone)
+
+
 async def start_consumer() -> None:
     """Inicia o consumer RabbitMQ."""
+    await _recover_orphan_buffers()
     await consume(_process_message)
