@@ -206,6 +206,23 @@ async def consume_outbound_echo(phone: str, text: str) -> bool:
     key = keys.outbound_echo_key(phone, _outbound_digest(text))
     deleted = await r.delete(key)
     return deleted == 1
+async def mark_outbound_id(msg_id: str, ttl: int = 600) -> None:
+    """Registra o id de uma mensagem enviada pelo proprio bot.
+
+    Permite reconhecer o eco dessa mensagem (reenviado pelo SAI Comercial) por
+    id exato, sem depender de track_source/texto.
+    """
+    if not msg_id:
+        return
+    r = await get_redis()
+    await r.set(keys.outbound_id_key(msg_id), "1", ex=ttl)
+
+
+async def is_outbound_id(msg_id: str) -> bool:
+    if not msg_id:
+        return False
+    r = await get_redis()
+    return await r.exists(keys.outbound_id_key(msg_id)) == 1
 
 # --------------- leads ---------------
 
@@ -240,8 +257,8 @@ async def delete_lead(phone: str) -> None:
 
 async def reset_lead_state(phone: str) -> None:
     """Apaga TODAS as chaves Redis relacionadas ao lead — usado pelo /reset.
-    Inclui: histórico, buffer, bloqueio humano, flag de alerta, followup ativo
-    e o hash do lead."""
+    Inclui: histórico, buffer, bloqueio humano, flag de alerta, followup ativo,
+    lock de followup e o hash do lead."""
     r = await get_redis()
     await r.delete(
         keys.history_key(phone),
@@ -249,5 +266,25 @@ async def reset_lead_state(phone: str) -> None:
         keys.block_key(phone),
         keys.alert_key(phone),
         keys.followup_active_key(phone),
+        keys.followup_lock_key(phone),
         keys.lead_key(phone),
     )
+
+
+# --------------- trava de follow-up (idempotencia) ---------------
+
+async def acquire_followup_lock(phone: str, ttl: int = 3600) -> bool:
+    """SETNX por telefone. Retorna True se o caller ganhou a trava (deve
+    processar) ou False se outro processo ja esta cuidando deste lead."""
+    if not phone:
+        return False
+    r = await get_redis()
+    ok = await r.set(keys.followup_lock_key(phone), "1", nx=True, ex=ttl)
+    return bool(ok)
+
+
+async def release_followup_lock(phone: str) -> None:
+    if not phone:
+        return
+    r = await get_redis()
+    await r.delete(keys.followup_lock_key(phone))

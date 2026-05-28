@@ -35,10 +35,19 @@ def alert_key(phone: str) -> str:
 
 def outbound_echo_key(phone: str, digest: str) -> str:
     return f"{_phone_ns(phone)}:outbound:{digest}"
+def outbound_id_key(msg_id: str) -> str:
+    # Global (id de mensagem ja e unico) — marca ecos do proprio bot por id exato.
+    return f"{settings.PROJECT_SLUG}:outbound-id:{msg_id}"
 
 
 def followup_active_key(phone: str) -> str:
     return f"{_phone_ns(phone)}:followup:active"
+
+
+def followup_lock_key(phone: str) -> str:
+    """Trava distribuida para impedir dois envios concorrentes do mesmo FUP
+    (race entre instancias do scheduler durante rolling update / overlap)."""
+    return f"{_phone_ns(phone)}:followup:lock"
 
 
 def processed_key(message_id: str) -> str:

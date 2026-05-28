@@ -18,7 +18,7 @@ from app import db
 from app.client_data import load_client_data
 from app.config import settings
 from app.followups import templates
-from app.services import uazapi
+from app.services import redis_service as rds, uazapi
 
 logger = logging.getLogger("followup.appointment_reminder")
 
@@ -79,6 +79,16 @@ async def run() -> None:
 
     for appt in due:
         phone = appt["phone"]
+        # Atendente humano assumiu: bloqueio ativo no Redis (ate amanha 08:00 SP).
+        # Nao envia lembrete por cima do humano — pula sem marcar reminder_sent,
+        # retoma no proximo run apos o bloqueio expirar (se ainda na janela).
+        if await rds.is_blocked(phone):
+            logger.info("[%s] bloqueado (humano assumiu) — lembrete adiado", phone)
+            continue
+        # Trava idempotente para impedir reenvio em rolling update do scheduler.
+        if not await rds.acquire_followup_lock(phone, ttl=3600):
+            logger.info("[%s] lembrete ja em andamento, pulando", phone)
+            continue
         # Pega nome do lead (SQLite)
         lead = await db.get_lead(phone)
         nome = (lead or {}).get("nome") or ""
@@ -100,6 +110,7 @@ async def run() -> None:
 
         if not msg:
             logger.info("[%s] template appointment_reminder vazio, pulando", phone)
+            await rds.release_followup_lock(phone)
             continue
 
         if settings.FOLLOWUP_DRY_RUN:
@@ -109,7 +120,9 @@ async def run() -> None:
                 await uazapi.send_text(phone, msg)
             except Exception:
                 logger.exception("[%s] falha ao enviar lembrete de agendamento", phone)
+                await rds.release_followup_lock(phone)
                 continue
 
         await db.mark_reminder_sent(appt["id"])
+        await rds.release_followup_lock(phone)
         logger.info("[%s] reminder enviado (appointment_id=%s)", phone, appt["id"])

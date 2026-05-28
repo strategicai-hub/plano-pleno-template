@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 from app import db
 from app.client_data import load_client_data
 from app.config import settings
-from app.services import uazapi
+from app.services import redis_service as rds, uazapi
 from app.services.gemini import generate_reactivation_message
 
 logger = logging.getLogger("followup.reactivation")
@@ -103,15 +103,36 @@ async def run() -> None:
             await db.mark_finalizado(phone)
             continue
 
+        # Atendente humano assumiu: bloqueio ativo no Redis (ate amanha 08:00 SP).
+        # Nao reativa por cima do humano — sai sem avancar o estagio, retoma no
+        # proximo run apos o bloqueio expirar.
+        if await rds.is_blocked(phone):
+            logger.info("[%s] bloqueado (humano assumiu) — reativacao adiada", phone)
+            continue
+
+        # Trava distribuida: impede que duas execucoes concorrentes do
+        # scheduler (rolling update / overlap) gerem dois envios pro mesmo
+        # lead. TTL=3600s cobre o pior cenario de Gemini lento + falha.
+        if not await rds.acquire_followup_lock(phone, ttl=3600):
+            logger.info("[%s] follow-up ja em andamento, pulando", phone)
+            continue
+
         now_str = now_tz.strftime("%A, %d/%m/%Y %H:%M")
         try:
             msg = await generate_reactivation_message(phone, nome, stage, now_str)
         except Exception:
             logger.exception("[%s] falha ao gerar reativacao", phone)
+            # Adia 1h para nao reentrar a cada 15min enquanto Gemini esta fora.
+            retry_iso = (now_tz + timedelta(hours=1)).astimezone(timezone.utc).isoformat()
+            await db.schedule_followup(phone, next_follow_up_iso=retry_iso, stage=stage)
+            await rds.release_followup_lock(phone)
             continue
 
         if not msg:
             logger.info("[%s] mensagem vazia (stage=%d), pulando", phone, stage)
+            retry_iso = (now_tz + timedelta(hours=1)).astimezone(timezone.utc).isoformat()
+            await db.schedule_followup(phone, next_follow_up_iso=retry_iso, stage=stage)
+            await rds.release_followup_lock(phone)
             continue
 
         if settings.FOLLOWUP_DRY_RUN:
@@ -121,6 +142,11 @@ async def run() -> None:
                 await uazapi.send_text(phone, msg)
             except Exception:
                 logger.exception("[%s] falha ao enviar reativacao", phone)
+                # Adia 1h para nao tentar reenviar a cada 15min (ex.: UAZAPI fora
+                # ou token stale ficava em loop infinito).
+                retry_iso = (now_tz + timedelta(hours=1)).astimezone(timezone.utc).isoformat()
+                await db.schedule_followup(phone, next_follow_up_iso=retry_iso, stage=stage)
+                await rds.release_followup_lock(phone)
                 continue
 
         finalize = stage >= max_stages
@@ -130,4 +156,5 @@ async def run() -> None:
             next_iso = (now_tz + timedelta(days=1)).astimezone(timezone.utc).isoformat()
 
         await db.advance_followup_stage(phone, new_stage, next_iso, finalize)
+        await rds.release_followup_lock(phone)
         logger.info("[%s] stage %d -> %d (finalize=%s)", phone, stage, new_stage, finalize)
