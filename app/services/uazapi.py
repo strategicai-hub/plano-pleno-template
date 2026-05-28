@@ -30,25 +30,56 @@ def _json_body(payload: dict) -> bytes:
     return _json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
 
+# Toda mensagem enviada pelo bot vai marcada com este track_source. O webhook
+# filtra `track_source in ("n8n", "IA")` (fromMe), entao os ecos do proprio bot
+# (reenviados pelo SAI Comercial) sao descartados — sem isso, o bot se
+# autobloquearia a cada envio quando paramos de descartar `wasSentByApi`.
+TRACK_SOURCE = "IA"
+
+
+async def _remember_outbound(resp_json: dict) -> None:
+    """Marca o(s) id(s) da mensagem recem-enviada como eco do proprio bot."""
+    if not isinstance(resp_json, dict):
+        return
+    candidates = [resp_json, resp_json.get("message")]
+    for obj in candidates:
+        if not isinstance(obj, dict):
+            continue
+        for k in ("messageid", "id"):
+            v = obj.get(k)
+            if isinstance(v, str) and v:
+                await rds.mark_outbound_id(v)
+
+
 async def send_text(number: str, text: str, delay: int = 4000) -> dict:
     url = f"{settings.UAZAPI_BASE_URL}/send/text"
-    payload = {"number": number, "text": text, "delay": delay}
+    payload = {"number": number, "text": text, "delay": delay, "track_source": TRACK_SOURCE}
     await rds.mark_outbound_echo(number, text)
     client = _get_client()
     resp = await client.post(url, content=_json_body(payload), headers=_headers())
     resp.raise_for_status()
+    data = resp.json()
+    await _remember_outbound(data)
     logger.info("Texto enviado para %s", number)
-    return resp.json()
+    return data
 
 
 async def _send_media(number: str, media_type: str, file_url: str, delay: int = 4000) -> dict:
     url = f"{settings.UAZAPI_BASE_URL}/send/media"
-    payload = {"number": number, "type": media_type, "file": file_url, "delay": delay}
+    payload = {
+        "number": number,
+        "type": media_type,
+        "file": file_url,
+        "delay": delay,
+        "track_source": TRACK_SOURCE,
+    }
     client = _get_client()
     resp = await client.post(url, content=_json_body(payload), headers=_headers())
     resp.raise_for_status()
+    data = resp.json()
+    await _remember_outbound(data)
     logger.info("%s enviado para %s", media_type, number)
-    return resp.json()
+    return data
 
 
 async def send_image(number: str, image_url: str, caption: str = "") -> dict:

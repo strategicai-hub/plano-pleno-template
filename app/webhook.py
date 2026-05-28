@@ -33,26 +33,6 @@ def _is_reset_confirmation(text: str) -> bool:
     return normalized == "conversa reiniciada"
 
 
-def _truthy(value) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "sim"}
-    return bool(value)
-
-
-def _was_sent_by_api(msg: dict) -> bool:
-    return any(
-        _truthy(msg.get(key))
-        for key in (
-            "wasSentByApi",
-            "wassentbyapi",
-            "isSentByApi",
-            "sentByApi",
-            "fromApi",
-        )
-    )
-
 
 @router.post(settings.WEBHOOK_PATH)
 async def webhook(request: Request):
@@ -66,8 +46,17 @@ async def webhook(request: Request):
         return {"status": "ignored", "reason": f"track_source={track_source}"}
 
     from_me = msg.get("fromMe", False)
-    if from_me and _was_sent_by_api(msg):
-        return {"status": "ignored", "reason": "sent by api"}
+
+    # Eco do proprio bot: mensagens enviadas pelo bot voltam (reenviadas pelo
+    # SAI Comercial) com fromMe=True. Identificamos pelo id exato registrado no
+    # envio. NAO descartamos por `wasSentByApi` — a atendente humana respondendo
+    # pelo painel tambem chega com wasSentByApi=True, e precisa disparar o
+    # bloqueio. O filtro de track_source ("IA"/"n8n") acima ja cobre os ecos do
+    # bot; este check por id e a rede de seguranca caso track_source se perca.
+    if from_me:
+        msg_id = msg.get("id") or msg.get("messageid") or ""
+        if msg_id and await rds.is_outbound_id(msg_id):
+            return {"status": "ignored", "reason": "own outbound echo (id)"}
 
     # Quando fromMe=True (atendente humano enviou pelo WhatsApp Web/celular),
     # sender_pn e o numero DA EMPRESA e chatid e o do LEAD (destinatario).

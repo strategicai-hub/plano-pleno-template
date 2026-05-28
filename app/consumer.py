@@ -64,6 +64,9 @@ def _warn(text: str) -> str:
 def _err(text: str) -> str:
     return f'<span style="color:#e74c3c"><b>❌ ERRO</b></span> {text}'
 
+def _human(origem: str, text: str) -> str:
+    return f'<span style="color:#16a085"><b>🧑‍💼 ATENDENTE HUMANO - {origem}</b></span> {text}'
+
 
 def _strip_html(text: str) -> str:
     return re.sub(r"<[^>]+>", "", text)
@@ -226,7 +229,14 @@ async def _process_message(msg: dict) -> None:
 
     if from_me:
         await rds.set_block(phone)
-        logger.info("Humano assumiu chat %s - agente bloqueado por 1h", chat_id)
+        # Origem: painel SAI envia via API (wasSentByApi=true); WhatsApp do
+        # celular/Web nao seta a flag.
+        raw = msg.get("raw_message") or {}
+        via_painel = bool(raw.get("wasSentByApi"))
+        origem = "Painel SAI" if via_painel else "WhatsApp"
+        log(_human(origem, f"[{phone}] agente bloqueado ate amanha 08:00 SP"))
+        logger.info("Humano assumiu chat %s via %s - agente bloqueado ate amanha 08:00 SP", chat_id, origem)
+        _save_session_log(phone)
         return
 
     # B.1) Comando /reset — precedencia MAXIMA (antes do is_blocked para

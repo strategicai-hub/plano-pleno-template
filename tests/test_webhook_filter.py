@@ -36,20 +36,64 @@ def test_ignores_ia_source(client_and_published):
 
 
 
-def test_ignores_from_me_sent_by_api(client_and_published):
+def test_ignores_from_me_own_echo_by_id(client_and_published, monkeypatch):
+    """Eco do proprio bot (id registrado no envio) e descartado."""
+    import app.webhook as webhook_mod
+
     client, pub = client_and_published
+
+    async def fake_is_outbound_id(msg_id: str) -> bool:
+        return msg_id == "owner:ABC123"
+
+    monkeypatch.setattr(webhook_mod.rds, "is_outbound_id", fake_is_outbound_id)
+
     r = client.post("/testslug", json={
         "message": {
             "fromMe": True,
             "wasSentByApi": True,
+            "id": "owner:ABC123",
             "chatid": "5511999990000@c.us",
-            "text": "x",
+            "text": "Oi! Eu sou a Bia",
         }
     })
     assert r.status_code == 200
     assert r.json()["status"] == "ignored"
-    assert r.json()["reason"] == "sent by api"
+    assert r.json()["reason"] == "own outbound echo (id)"
     assert pub == []
+
+
+def test_queues_from_me_human_panel(client_and_published, monkeypatch):
+    """Atendente humana pelo painel chega fromMe + wasSentByApi, mas SEM
+    track_source e SEM id de eco do bot -> deve ser enfileirada para que o
+    consumer bloqueie o agente (set_block)."""
+    import app.webhook as webhook_mod
+
+    client, pub = client_and_published
+
+    async def fake_is_outbound_id(msg_id: str) -> bool:
+        return False
+
+    async def fake_consume_outbound_echo(phone: str, text: str) -> bool:
+        return False
+
+    monkeypatch.setattr(webhook_mod.rds, "is_outbound_id", fake_is_outbound_id)
+    monkeypatch.setattr(webhook_mod.rds, "consume_outbound_echo", fake_consume_outbound_echo)
+
+    r = client.post("/testslug", json={
+        "message": {
+            "fromMe": True,
+            "wasSentByApi": True,
+            "track_source": "",
+            "id": "owner:HUMAN999",
+            "chatid": "5511999990000@c.us",
+            "text": "Oi Gustavo, tudo bem?",
+        }
+    })
+    assert r.status_code == 200
+    assert r.json()["status"] == "queued"
+    assert len(pub) == 1
+    assert pub[0]["from_me"] is True
+    assert pub[0]["phone"] == "5511999990000"
 
 
 def test_ignores_from_me_outbound_echo(client_and_published, monkeypatch):
