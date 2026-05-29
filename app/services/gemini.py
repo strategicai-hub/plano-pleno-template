@@ -61,6 +61,16 @@ def _get_client() -> genai.Client:
     return _client
 
 
+# `_THINKING_OFF` é obrigatório em qualquer chamada com `max_output_tokens` curto
+# (followups, summary, transcrição, análise de imagem). Sem `thinking_budget=0`,
+# os tokens de pensamento invisíveis consomem o orçamento ANTES da saída visível
+# e a resposta sai truncada (ex.: "Oi Gustavo, percebi seu").
+# `_THINKING_DYNAMIC` deixa o modelo pensar livremente — só usar no chat principal,
+# que não tem teto de output.
+_THINKING_OFF = gtypes.ThinkingConfig(thinking_budget=0, include_thoughts=False)
+_THINKING_DYNAMIC = gtypes.ThinkingConfig(include_thoughts=False)
+
+
 def _history_to_contents(history: list[dict]) -> list[gtypes.Content]:
     contents: list[gtypes.Content] = []
     for h in history:
@@ -91,7 +101,7 @@ async def chat(phone: str, user_message: str, lead_name: str = "") -> tuple[str,
     config = gtypes.GenerateContentConfig(
         system_instruction=get_system_prompt(),
         temperature=0.4,
-        thinking_config=gtypes.ThinkingConfig(include_thoughts=False),
+        thinking_config=_THINKING_DYNAMIC,
     )
 
     t0 = time.monotonic()
@@ -141,7 +151,7 @@ async def transcribe_audio(audio_bytes: bytes, phone: str = "") -> str:
         ],
         config=gtypes.GenerateContentConfig(
             temperature=0.2,
-            thinking_config=gtypes.ThinkingConfig(include_thoughts=False),
+            thinking_config=_THINKING_OFF,
         ),
     )
     latency_ms = int((time.monotonic() - t0) * 1000)
@@ -192,7 +202,7 @@ async def generate_summary(phone: str) -> str:
             config=gtypes.GenerateContentConfig(
                 temperature=0.4,
                 max_output_tokens=150,
-                thinking_config=gtypes.ThinkingConfig(include_thoughts=False),
+                thinking_config=_THINKING_OFF,
             ),
         )
         latency_ms = int((time.monotonic() - t0) * 1000)
@@ -265,7 +275,7 @@ async def generate_reactivation_message(
             config=gtypes.GenerateContentConfig(
                 temperature=0.6,
                 max_output_tokens=200,
-                thinking_config=gtypes.ThinkingConfig(include_thoughts=False),
+                thinking_config=_THINKING_OFF,
             ),
         )
         latency_ms = int((time.monotonic() - t0) * 1000)
@@ -302,7 +312,7 @@ async def analyze_image(image_bytes: bytes, phone: str = "") -> str:
         ],
         config=gtypes.GenerateContentConfig(
             temperature=0.2,
-            thinking_config=gtypes.ThinkingConfig(include_thoughts=False),
+            thinking_config=_THINKING_OFF,
         ),
     )
     latency_ms = int((time.monotonic() - t0) * 1000)
