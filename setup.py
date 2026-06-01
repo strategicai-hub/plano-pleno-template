@@ -36,6 +36,7 @@ GITHUB_OWNER = "strategicai-hub"
 TEMPLATE_REPO = f"{GITHUB_OWNER}/plano-pleno-template"
 SAI_TOOLS_REPO = f"{GITHUB_OWNER}/sai-tools"
 WEBHOOK_DOMAIN = "webhook-whatsapp.strategicai.com.br"
+SAI_COMERCIAL_URL = "https://comercial.strategicai.com.br"
 
 PORTAINER_URL = "https://91.98.64.92:9443"
 PORTAINER_ENDPOINT_ID = 1
@@ -523,6 +524,46 @@ def build_env_list(data: dict) -> list[dict]:
     ]
 
 
+def register_chatbot_comercial(data: dict) -> None:
+    """Registra o chatbot no SAI Comercial (POST /api/chatbots/register).
+
+    Sempre executado logo apos a definicao do base URL do webhook
+    (https://webhook-whatsapp.strategicai.com.br/{slug}). O token vem de
+    CHATBOT_REGISTRATION_TOKEN em ~/.claude/.env (mesmo secret do service
+    sai-comercial_web no Portainer). Regras do endpoint:
+      - slug: ^[a-z0-9][a-z0-9-]*$
+      - baseUrl: URL valida, sem barra no fim (o endpoint ja corta)
+      - rate-limit: 30 req/IP/hora
+    """
+    token = SECRETS.get("CHATBOT_REGISTRATION_TOKEN")
+    if not token:
+        print("    AVISO: CHATBOT_REGISTRATION_TOKEN ausente em ~/.claude/.env - registro no SAI Comercial pulado.")
+        return
+
+    base_url = f"https://{WEBHOOK_DOMAIN}/{data['slug']}"
+    body = json.dumps({
+        "slug": data["slug"],
+        "name": data["business_name"],
+        "baseUrl": base_url,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        f"{SAI_COMERCIAL_URL}/api/chatbots/register",
+        data=body, method="POST",
+        headers={"Content-Type": "application/json", "x-registration-token": token},
+    )
+    try:
+        with urllib.request.urlopen(req, context=_SSL) as r:
+            resp = json.loads(r.read())
+        if resp.get("ok"):
+            print(f"    Chatbot '{data['slug']}' registrado no SAI Comercial - OK")
+        else:
+            print(f"    AVISO: resposta inesperada do SAI Comercial: {resp}")
+    except urllib.error.HTTPError as e:
+        print(f"    AVISO: SAI Comercial register falhou ({e.code}): {e.read().decode()[:200]}")
+    except Exception as e:
+        print(f"    AVISO: SAI Comercial register falhou: {e}")
+
+
 def register_sai_tools_client(data: dict) -> None:
     """Adiciona o cliente no clients.json do repo sai-tools."""
     import base64
@@ -637,6 +678,9 @@ def main():
 
     print("\n  [10/10] Registrando no sai-tools...")
     register_sai_tools_client(data)
+
+    print("\n  Registrando chatbot no SAI Comercial...")
+    register_chatbot_comercial(data)
 
     print_done(data, webhook_url)
 
