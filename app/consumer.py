@@ -274,6 +274,11 @@ async def _process_message(msg: dict) -> None:
     if _is_group(chat_id):
         return
 
+    # D.1) Marca a mensagem como lida (tiques azuis) assim que o bot a "ve".
+    # Roda para toda mensagem inbound valida — inclusive as que so entram no
+    # buffer de debounce — para o lead ver leitura como num atendimento humano.
+    await uazapi.mark_read(phone)
+
     # Cadastro de lead
     lead = await rds.get_lead(phone)
     if not lead:
@@ -359,6 +364,9 @@ async def _run_ai_and_reply(phone: str, unified_msg: str, lead: dict, push_name:
         return
     log(_msg(f"[{phone} - {push_name}] {unified_msg[:300]}"))
 
+    # F.1) "Digitando..." enquanto a IA pensa/responde.
+    await uazapi.send_presence(phone, "composing")
+
     # G) Processamento com IA (com retry)
     log(f"[TOOL GEMINI] Executando chat(phone={phone}, msg_len={len(unified_msg)})")
     ai_response = ""
@@ -399,6 +407,13 @@ async def _run_ai_and_reply(phone: str, unified_msg: str, lead: dict, push_name:
     for i, part in enumerate(parts):
         try:
             if part["type"] == "text":
+                # "Digitando..." some no WhatsApp assim que a mensagem anterior
+                # e entregue. Reativar antes de cada balao mantem o indicador
+                # visivel entre baloes. Sleep curto da tempo do app renderizar
+                # o estado antes da proxima mensagem chegar. So aplica para
+                # texto — midia tem indicador nativo proprio.
+                await uazapi.send_presence(phone, "composing")
+                await asyncio.sleep(1.5)
                 await uazapi.send_text(phone, part["content"])
             elif part["type"] == "image":
                 await uazapi.send_image(phone, part["content"])
