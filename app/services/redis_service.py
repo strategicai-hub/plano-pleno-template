@@ -33,6 +33,18 @@ async def set_block(phone: str, ttl: int | None = None, reason: str = "human") -
     await r.set(keys.block_key(phone), reason or "human", ex=ttl or _block_ttl_seconds())
 
 
+async def set_permanent_block(phone: str, reason: str = "manual") -> None:
+    """Bloqueio sem expiracao (manual via botao 'Desligar IA' no SAI).
+    So sai com clear_block() ou reset_lead_state()."""
+    r = await get_redis()
+    await r.set(keys.block_key(phone), reason or "manual")
+
+
+async def clear_block(phone: str) -> bool:
+    r = await get_redis()
+    return (await r.delete(keys.block_key(phone))) > 0
+
+
 async def is_blocked(phone: str) -> bool:
     r = await get_redis()
     return await r.exists(keys.block_key(phone)) == 1

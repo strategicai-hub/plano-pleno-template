@@ -11,6 +11,7 @@ from app.db import init_db_sync
 from app.services import rabbitmq
 from app.webhook import router
 from app.api import router as api_router
+from app.sai_router import router as sai_router
 
 init_db_sync()
 
@@ -37,6 +38,7 @@ app.add_middleware(
 
 app.include_router(router)
 app.include_router(api_router)
+app.include_router(sai_router)
 
 _media_dir = Path(__file__).parent.parent / "media"
 if _media_dir.is_dir():
