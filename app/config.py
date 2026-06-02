@@ -34,6 +34,18 @@ class Settings(BaseSettings):
     SAI_INGEST_SECRET: str = ""
     SAI_TENANT_ID: str = ""
 
+    # SAI Comercial — sincronizacao de painel e push/cancel de agendamentos
+    # Usados por app/services/sai_sync.py. Quando o super admin vincula o bot
+    # no painel SAI, o binding (tenantSlug + ingestSecret) cai no Redis via
+    # POST /sai/bind. SAI_TENANT_SLUG abaixo serve apenas como fallback.
+    SAI_CHATBOT_SLUG: str = ""
+    SAI_CHATBOT_PUBLIC_URL: str = ""
+    SAI_REGISTRATION_TOKEN: str = ""
+    SAI_TENANT_SLUG: str = ""
+    # Slug do projeto — usado pelo sai_sync para isolar a chave de binding
+    # quando varios chatbots compartilham o mesmo Redis.
+    PROJECT_SLUG: str = "template"
+
     # UAZAPI
     UAZAPI_BASE_URL: str = "https://strategicai.uazapi.com"
     UAZAPI_TOKEN: str = ""

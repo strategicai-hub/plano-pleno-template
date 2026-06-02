@@ -22,6 +22,7 @@ from app.services import uazapi
 from app.services.gemini import chat as gemini_chat, transcribe_audio, analyze_image, generate_summary
 from app.services.rabbitmq import consume
 from app.services.redis_keys import session_log_key
+from app.services import sai_sync
 from app.services import sheets_service
 
 logger = logging.getLogger(__name__)
@@ -120,16 +121,16 @@ def _is_group(chat_id: str) -> bool:
     return "@g.us" in chat_id
 
 
-def _parse_ai_response(text: str) -> tuple[list[dict], bool, bool, tuple[datetime, str] | None]:
+def _parse_ai_response(text: str) -> tuple[list[dict], bool, bool, tuple[datetime, str] | None, bool]:
     """
     Parseia a resposta da IA:
     - Extrai flag [FINALIZADO=0/1]
     - Extrai flag [TRANSFERIR=0/1] (indica transferencia para equipe humana)
     - Extrai flag [AGENDAR=YYYY-MM-DDTHH:MM|modalidade] (PLENO apenas)
+    - Extrai flag [CANCELAR_AGENDAMENTO] (PLENO apenas; cancela o ultimo agendamento ativo)
     - Quebra em partes (por \\n\\n ou |||)
     - Detecta tags de midia e substitui pelos links do dicionario
-    Retorna (partes, finalizado, transferir, agendar).
-    agendar = (datetime, modalidade) quando a IA emitiu [AGENDAR=...]; None caso contrario.
+    Retorna (partes, finalizado, transferir, agendar, cancelar_agendamento).
     """
     finalizado = False
     match = re.search(r"\[FINALIZADO=(\d)\]", text)
@@ -160,6 +161,11 @@ def _parse_ai_response(text: str) -> tuple[list[dict], bool, bool, tuple[datetim
             logger.warning("AGENDAR com formato invalido: %r", iso_str)
         text = re.sub(r"\[AGENDAR=[^\]]+\]", "", text).strip()
 
+    cancelar_agendamento = False
+    if re.search(r"\[CANCELAR_AGENDAMENTO\]", text):
+        cancelar_agendamento = True
+        text = re.sub(r"\[CANCELAR_AGENDAMENTO\]", "", text).strip()
+
     if "|||" in text:
         raw_parts = [p.strip() for p in text.split("|||") if p.strip()]
     else:
@@ -178,7 +184,7 @@ def _parse_ai_response(text: str) -> tuple[list[dict], bool, bool, tuple[datetim
     if not parts:
         parts = [{"type": "text", "content": text}]
 
-    return parts, finalizado, transferir, agendar
+    return parts, finalizado, transferir, agendar, cancelar_agendamento
 
 
 # ---- processamento principal ----
@@ -398,7 +404,7 @@ async def _run_ai_and_reply(phone: str, unified_msg: str, lead: dict, push_name:
         return
 
     # I) Parsing e envio
-    parts, finalizado, transferir, agendar = _parse_ai_response(ai_response)
+    parts, finalizado, transferir, agendar, cancelar_agendamento = _parse_ai_response(ai_response)
     log(_ok(f"[TOOL GEMINI] Resultado: SUCESSO - {len(parts)} parte(s) gerada(s), finalizado={finalizado}, transferir={transferir}, agendar={agendar is not None}"))
     log(_ai(f"[{phone}] {ai_response[:400]}"))
     if tokens[2]:
@@ -433,6 +439,10 @@ async def _run_ai_and_reply(phone: str, unified_msg: str, lead: dict, push_name:
     # J.1) PLENO: cria agendamento quando a IA emitiu [AGENDAR=...]
     if agendar is not None:
         await _handle_agendar(phone, lead.get("name", ""), agendar)
+
+    # J.2) PLENO: cancela ultimo agendamento ativo quando a IA emitiu [CANCELAR_AGENDAMENTO]
+    if cancelar_agendamento:
+        await _handle_cancelar(phone)
 
     # K) Pos-envio: finalizacao + resumo
     if finalizado:
@@ -503,10 +513,71 @@ async def _handle_agendar(phone: str, nome: str, agendar: tuple[datetime, str]) 
         )
         # Tira o lead da fila de reativação: já tem aula marcada.
         await db.upsert_lead(phone, status_conversa="agendado", next_follow_up=None)
+        # Reporta ao SAI Comercial (fire-and-forget — nao bloqueia se SAI estiver fora).
+        if created:
+            try:
+                scheduled_utc = start_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                sai_payload = {
+                    "scheduledAt": scheduled_utc,
+                    "contactName": nome or phone,
+                    "contactPhone": phone,
+                }
+                if external_id:
+                    sai_payload["externalId"] = f"{source}:{external_id}"
+                if modalidade:
+                    sai_payload["modality"] = modalidade
+                asyncio.create_task(sai_sync.push_appointment(sai_payload))
+            except Exception as sai_err:
+                log(_warn(f"[TOOL AGENDAR] Falha ao agendar push pro SAI - {sai_err}"))
         log(_ok(f"[TOOL AGENDAR] Resultado: SUCESSO - source={source}, external_id={external_id}, created={created}"))
     except Exception as e:
         log(_err(f"[TOOL AGENDAR] Resultado: EXCECAO - {e}"))
         logger.exception("Erro ao registrar agendamento para %s", phone)
+
+
+async def _handle_cancelar(phone: str) -> None:
+    """PLENO: cancela ultimo agendamento ativo do lead. Local + SAI Comercial + alerta.
+    Chamado quando a IA emite [CANCELAR_AGENDAMENTO].
+    """
+    log(f"[TOOL CANCELAR] Executando cancel_appointment(phone={phone})")
+    try:
+        canceled, external_id, source = await db.cancel_appointment(phone)
+    except Exception as e:
+        log(_err(f"[TOOL CANCELAR] Resultado: EXCECAO local - {e}"))
+        logger.exception("cancel_appointment local falhou para %s", phone)
+        canceled, external_id, source = False, None, None
+
+    if not canceled:
+        log(_warn(f"[TOOL CANCELAR] Nenhum agendamento ativo encontrado para {phone}"))
+    else:
+        log(_ok(f"[TOOL CANCELAR] Cancelado localmente (source={source}, ext={external_id})"))
+
+    try:
+        await db.upsert_lead(phone, status_conversa="lead")
+    except Exception:
+        logger.debug("upsert_lead apos cancelamento falhou para %s", phone)
+
+    try:
+        ext_for_sai = f"{source}:{external_id}" if external_id and source else None
+        asyncio.create_task(sai_sync.cancel_appointment(
+            contact_phone=phone,
+            external_id=ext_for_sai,
+            reason="cancelado pelo lead via chat",
+        ))
+    except Exception as sai_err:
+        log(_warn(f"[TOOL CANCELAR] Falha ao agendar cancel pro SAI - {sai_err}"))
+
+    if settings.ALERT_PHONE:
+        alert_text = (
+            "⚠️ CANCELAMENTO\n"
+            f"WhatsApp: {phone}\n"
+            "O lead cancelou o agendamento."
+        )
+        try:
+            await uazapi.send_text(settings.ALERT_PHONE, alert_text)
+            log(_ok(f"[TOOL CANCELAR] Equipe notificada em {settings.ALERT_PHONE}"))
+        except Exception as alert_error:
+            log(_err(f"[TOOL CANCELAR] Falha ao notificar equipe - {alert_error}"))
 
 
 async def _update_summary_and_sheets(phone: str, name: str) -> None:

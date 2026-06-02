@@ -345,8 +345,9 @@ Ao final da sua mensagem, SEMPRE inclua UMA linha extra com as flags apropriadas
 - `[TRANSFERIR=1]` — inclua quando você acabou de avisar que vai repassar o atendimento para a equipe humana (ex: Protocolo para Alunos, exceções fora do padrão de agendamento). Fora desses casos, use `[TRANSFERIR=0]`.
 - `[FINALIZADO=1]` — inclua quando a conversa foi encerrada (ex: "Combinado! Qualquer coisa, é só chamar."). Caso contrário use `[FINALIZADO=0]`.
 - `[AGENDAR=YYYY-MM-DDTHH:MM|modalidade]` — inclua apenas quando o lead CONFIRMOU explicitamente um agendamento (ver FASE 4). Exemplo: `[AGENDAR=2025-11-12T19:00|Boxe tradicional]`. Se você ainda não tem confirmação do lead, NÃO emita essa flag.
+- `[CANCELAR_AGENDAMENTO]` — inclua quando o lead pedir explicitamente para CANCELAR a aula/avaliação que estava marcada (ex: "não vou poder ir", "preciso cancelar", "desmarca aí"). Use junto da resposta empática ao lead (ex: "Tudo bem! Cancelei pra você. Quando quiser remarcar, é só me chamar."). Não emita essa flag se o lead só está REMARCANDO — nesse caso emita o novo `[AGENDAR=...]`.
 
-As flags não aparecem para o lead — o sistema as remove antes do envio. Elas controlam transferência de atendimento, bloqueio do agente e criação do evento no calendário.
+As flags não aparecem para o lead — o sistema as remove antes do envio. Elas controlam transferência de atendimento, bloqueio do agente, criação/cancelamento do evento no calendário e sincronização com o painel SAI.
 
 ---
 

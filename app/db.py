@@ -281,6 +281,34 @@ async def schedule_appointment(
         return cur.lastrowid or 0, True
 
 
+async def cancel_appointment(phone: str) -> tuple[bool, Optional[str], Optional[str]]:
+    """Cancela o agendamento ativo mais recente do `phone`.
+    Retorna (cancelou?, external_id, source) — usado para tambem cancelar no
+    backend de calendar e/ou no SAI Comercial.
+    """
+    async with aiosqlite.connect(settings.SQLITE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            """
+            SELECT id, external_id, source FROM appointments
+            WHERE phone = ? AND status IN ('booked', 'reminded')
+            ORDER BY scheduled_at DESC LIMIT 1
+            """,
+            (phone,),
+        )
+        row = await cur.fetchone()
+        if not row:
+            return False, None, None
+        now = _now_iso()
+        await db.execute(
+            "UPDATE appointments SET status='canceled', reminder_sent_at=? WHERE id=?",
+            (now, row["id"]),
+        )
+        await db.commit()
+        logger.info("cancel_appointment: id=%s phone=%s source=%s ext=%s", row["id"], phone, row["source"], row["external_id"])
+        return True, row["external_id"], row["source"]
+
+
 async def get_appointments_for_reminder(
     until_iso: str,
     now_iso: Optional[str] = None,
