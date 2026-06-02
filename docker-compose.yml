@@ -53,7 +53,12 @@ services:
       labels:
         - "traefik.enable=true"
         - "traefik.docker.network=network_public"
-        - "traefik.http.routers.{{SLUG}}.rule=Host(`webhook-whatsapp.strategicai.com.br`) && PathPrefix(`/{{SLUG}}`)"
+        # PathPrefix usa ${PROJECT_SLUG} (interpolado no deploy), NAO o slug da stack.
+        # O bot Python escuta em POST /${PROJECT_SLUG} (WEBHOOK_PATH) e o SAI Comercial
+        # faz relay para .../${PROJECT_SLUG}. Quando o nome da stack diverge do
+        # PROJECT_SLUG (ex.: stack "aktkd-pleno" mas PROJECT_SLUG "aktkd"), usar
+        # /{{SLUG}} aqui quebra o roteamento (404) — por isso fixamos no PROJECT_SLUG.
+        - "traefik.http.routers.{{SLUG}}.rule=Host(`webhook-whatsapp.strategicai.com.br`) && PathPrefix(`/${PROJECT_SLUG}`)"
         - "traefik.http.routers.{{SLUG}}.entrypoints=websecure"
         - "traefik.http.routers.{{SLUG}}.tls=true"
         - "traefik.http.routers.{{SLUG}}.tls.certresolver=letsencryptresolver"
