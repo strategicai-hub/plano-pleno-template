@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 PLANO START - Setup automatizado de novo projeto.
 
@@ -38,7 +38,7 @@ SAI_TOOLS_REPO = f"{GITHUB_OWNER}/sai-tools"
 WEBHOOK_DOMAIN = "webhook-whatsapp.strategicai.com.br"
 SAI_COMERCIAL_URL = "https://comercial.strategicai.com.br"
 
-PORTAINER_URL = "https://91.98.64.92:9443"
+PORTAINER_URL = "https://portainer.strategicai.com.br"
 PORTAINER_ENDPOINT_ID = 1
 
 # ── secrets: ~/.claude/.env (primário) + .secrets.json (override local) ─────
