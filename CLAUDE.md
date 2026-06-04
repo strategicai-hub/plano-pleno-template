@@ -82,7 +82,16 @@ Sempre que fizer uma correção ou melhoria em um projeto de cliente do plano pl
 
 ## Projetos derivados diretos
 
-- [luitz-prime](https://github.com/strategicai-hub/luitz-prime) — Luitz Prime Consorcio (nicho: consorcio, assistente: Vic)
+- [aje-de-boxe](https://github.com/strategicai-hub/aje-de-boxe) — AJE DE BOXE (nicho: academia de boxe, assistente: Vic)
+- [aktkd](https://github.com/strategicai-hub/aktkd-pleno) — AKTKD (nicho: artes marciais, assistente: Kira)
+- [duzani](https://github.com/strategicai-hub/duzani) — Duzani Cuiabá (nicho: distribuidora de moda, assistente: Luna)
+- [eba](https://github.com/strategicai-hub/eba) — EBA! ACADEMY (nicho: consultora de beleza, assistente: Bia)
+- [emagrecentro](https://github.com/strategicai-hub/emagrecentro) — Emagrecentro (nicho: clínica estética, assistente: Aura)
+- [flexfitness](https://github.com/strategicai-hub/flexfitness) — Academia Flexfitness (nicho: academia, assistente: Vic)
+- [muuvifit](https://github.com/strategicai-hub/muuvfit) — MUUVFIT (nicho: academia, assistente: Muuvy)
+- [portal-fit-box](https://github.com/strategicai-hub/portal-fit-box) — Portal Fitbox (nicho: academia, assistente: Luna)
+- [seven](https://github.com/strategicai-hub/seven) — Seven (referência avançada — function calling/tools)
+- [sqin](https://github.com/strategicai-hub/sqin) — Clínica SQIN (nicho: estética avançada, assistente: Lia)
 
 > **Importante:** esta lista é a **fonte de verdade** usada por `scripts/sync-to-derived.sh`. Ao adicionar um novo cliente derivado deste template, inclua o link do repo aqui.
 
