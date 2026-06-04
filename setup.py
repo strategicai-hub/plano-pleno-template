@@ -451,6 +451,9 @@ ALERT_PHONE={data['alert_phone']}
 ALERT_COOLDOWN_SECONDS=1800
 DEBOUNCE_BYPASS_PHONES={data['alert_phone']}
 ALLOWED_PHONES=
+SAI_BASE_URL={SAI_COMERCIAL_URL}
+SAI_TENANT_ID={data.get('sai_tenant_id', '')}
+SAI_INGEST_SECRET={data.get('sai_ingest_secret', '')}
 """
     (repo_dir / ".env").write_text(env, encoding="utf-8")
     print("    .env - OK")
@@ -494,7 +497,7 @@ def commit_push(repo_dir: Path, data: dict):
 
 
 def build_env_list(data: dict) -> list[dict]:
-    return [
+    env = [
         {"name": "PROJECT_SLUG", "value": data["slug"]},
         {"name": "BUSINESS_NAME", "value": data["business_name"]},
         {"name": "ASSISTANT_NAME", "value": data["assistant_name"]},
@@ -530,6 +533,14 @@ def build_env_list(data: dict) -> list[dict]:
         {"name": "SAI_CHATBOT_PUBLIC_URL", "value": f"https://{WEBHOOK_DOMAIN}/{data['slug']}"},
         {"name": "SAI_REGISTRATION_TOKEN", "value": SECRETS.get("CHATBOT_REGISTRATION_TOKEN", "")},
     ]
+    # Telemetria/sync IA — so existem apos o provisionamento do tenant no SAI
+    # Comercial (2a passada do onboard.py). Sem estes, sai_metrics/sai_sync viram
+    # no-op. Inclui so quando presentes em data (vazios na 1a passada do setup).
+    if data.get("sai_tenant_id"):
+        env.append({"name": "SAI_TENANT_ID", "value": data["sai_tenant_id"]})
+    if data.get("sai_ingest_secret"):
+        env.append({"name": "SAI_INGEST_SECRET", "value": data["sai_ingest_secret"]})
+    return env
 
 
 def register_chatbot_comercial(data: dict) -> None:
@@ -546,7 +557,7 @@ def register_chatbot_comercial(data: dict) -> None:
     token = SECRETS.get("CHATBOT_REGISTRATION_TOKEN")
     if not token:
         print("    AVISO: CHATBOT_REGISTRATION_TOKEN ausente em ~/.claude/.env - registro no SAI Comercial pulado.")
-        return
+        return None
 
     base_url = f"https://{WEBHOOK_DOMAIN}/{data['slug']}"
     body = json.dumps({
@@ -569,8 +580,9 @@ def register_chatbot_comercial(data: dict) -> None:
             with urllib.request.urlopen(req, context=_SSL, timeout=15) as r:
                 resp = json.loads(r.read())
             if resp.get("ok"):
+                cb_id = (resp.get("chatbot") or {}).get("id")
                 print(f"    Chatbot '{data['slug']}' registrado no SAI Comercial - OK")
-                return
+                return cb_id
             last_err = f"resposta inesperada: {resp}"
         except urllib.error.HTTPError as e:
             last_err = f"HTTP {e.code}: {e.read().decode()[:200]}"
@@ -583,6 +595,17 @@ def register_chatbot_comercial(data: dict) -> None:
     print(f"    AVISO: registro one-shot no SAI Comercial FALHOU: {last_err}")
     print("           Sem problema: o bot se auto-registra no proximo boot "
           "(envs SAI_CHATBOT_* ja estao no stack).")
+    return None
+
+
+def update_stack_env(stack_id: int, env_list: list) -> None:
+    """Atualiza as variaveis de ambiente da stack (2a passada do onboard).
+
+    Wrapper de redeploy_stack_with_auth: re-deploy via git com o env_list novo
+    (ex.: apos obter SAI_TENANT_ID/SAI_INGEST_SECRET no provisionamento do
+    tenant). PullImage=true garante que o container reinicie com o env atualizado.
+    """
+    redeploy_stack_with_auth(stack_id, env_list)
 
 
 def register_sai_tools_client(data: dict) -> None:
