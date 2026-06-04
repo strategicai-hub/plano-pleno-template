@@ -521,6 +521,14 @@ def build_env_list(data: dict) -> list[dict]:
         {"name": "ALERT_COOLDOWN_SECONDS", "value": "1800"},
         {"name": "DEBOUNCE_BYPASS_PHONES", "value": data["alert_phone"]},
         {"name": "ALLOWED_PHONES", "value": ""},
+        # SAI Comercial — auto-registro no catalogo a cada boot (fallback do
+        # registro one-shot da criacao). Sem estas envs o register_with_sai()
+        # vira no-op e o bot nao aparece no dropdown de "Novo tenant".
+        {"name": "SAI_BASE_URL", "value": SAI_COMERCIAL_URL},
+        {"name": "SAI_CHATBOT_SLUG", "value": data["slug"]},
+        {"name": "SAI_CHATBOT_NAME", "value": data["business_name"]},
+        {"name": "SAI_CHATBOT_PUBLIC_URL", "value": f"https://{WEBHOOK_DOMAIN}/{data['slug']}"},
+        {"name": "SAI_REGISTRATION_TOKEN", "value": SECRETS.get("CHATBOT_REGISTRATION_TOKEN", "")},
     ]
 
 
@@ -546,22 +554,35 @@ def register_chatbot_comercial(data: dict) -> None:
         "name": data["business_name"],
         "baseUrl": base_url,
     }).encode("utf-8")
-    req = urllib.request.Request(
-        f"{SAI_COMERCIAL_URL}/api/chatbots/register",
-        data=body, method="POST",
-        headers={"Content-Type": "application/json", "x-registration-token": token},
-    )
-    try:
-        with urllib.request.urlopen(req, context=_SSL) as r:
-            resp = json.loads(r.read())
-        if resp.get("ok"):
-            print(f"    Chatbot '{data['slug']}' registrado no SAI Comercial - OK")
-        else:
-            print(f"    AVISO: resposta inesperada do SAI Comercial: {resp}")
-    except urllib.error.HTTPError as e:
-        print(f"    AVISO: SAI Comercial register falhou ({e.code}): {e.read().decode()[:200]}")
-    except Exception as e:
-        print(f"    AVISO: SAI Comercial register falhou: {e}")
+
+    # Tenta algumas vezes — falha transitoria de rede nao deve deixar o bot
+    # fora do catalogo. Mesmo que tudo falhe aqui, o container ainda se
+    # auto-registra no startup via register_with_sai() (envs SAI_CHATBOT_*).
+    last_err = None
+    for attempt in range(1, 4):
+        req = urllib.request.Request(
+            f"{SAI_COMERCIAL_URL}/api/chatbots/register",
+            data=body, method="POST",
+            headers={"Content-Type": "application/json", "x-registration-token": token},
+        )
+        try:
+            with urllib.request.urlopen(req, context=_SSL, timeout=15) as r:
+                resp = json.loads(r.read())
+            if resp.get("ok"):
+                print(f"    Chatbot '{data['slug']}' registrado no SAI Comercial - OK")
+                return
+            last_err = f"resposta inesperada: {resp}"
+        except urllib.error.HTTPError as e:
+            last_err = f"HTTP {e.code}: {e.read().decode()[:200]}"
+        except Exception as e:
+            last_err = str(e)
+        if attempt < 3:
+            print(f"    tentativa {attempt}/3 falhou ({last_err}); repetindo em 3s...")
+            time.sleep(3)
+
+    print(f"    AVISO: registro one-shot no SAI Comercial FALHOU: {last_err}")
+    print("           Sem problema: o bot se auto-registra no proximo boot "
+          "(envs SAI_CHATBOT_* ja estao no stack).")
 
 
 def register_sai_tools_client(data: dict) -> None:

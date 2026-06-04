@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     # no painel SAI, o binding (tenantSlug + ingestSecret) cai no Redis via
     # POST /sai/bind. SAI_TENANT_SLUG abaixo serve apenas como fallback.
     SAI_CHATBOT_SLUG: str = ""
+    SAI_CHATBOT_NAME: str = ""
     SAI_CHATBOT_PUBLIC_URL: str = ""
     SAI_REGISTRATION_TOKEN: str = ""
     SAI_TENANT_SLUG: str = ""
