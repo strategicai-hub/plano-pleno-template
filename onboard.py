@@ -58,6 +58,14 @@ def ask(prompt: str, default: str = "", required: bool = True) -> str:
         print("    (campo obrigatorio)")
 
 
+def ask_yesno(prompt: str, default: bool = False) -> bool:
+    suffix = "[S/n]" if default else "[s/N]"
+    v = input(f"  {prompt} {suffix}: ").strip().lower()
+    if not v:
+        return default
+    return v in ("s", "sim", "y", "yes")
+
+
 # ── YAML -> SAI assistantConfig ──────────────────────────
 
 _WEEKMAP = {"mon_fri": [1, 2, 3, 4, 5], "sat": [6], "sun": [0]}  # SAI: dom=0..sab=6
@@ -202,15 +210,18 @@ def parse_args():
     p.add_argument("--yaml", required=True, help="Caminho do client.yaml de negocio preenchido")
     p.add_argument("--slug", required=True)
     p.add_argument("--admin-email", required=True)
-    p.add_argument("--name", default="", help="Nome do negocio (default: business.name do YAML)")
-    p.add_argument("--alert-phone", default="", help="Telefone do dono (ALERT_PHONE)")
+    p.add_argument("--name", default="", help="Nome do negocio (default: pergunta interativa / business.name do YAML)")
+    p.add_argument("--alert-phone", default="5511989887525",
+                   help="Telefone do dono (ALERT_PHONE). Default: 5511989887525 (trocar no Portainer depois)")
     p.add_argument("--provider", choices=["UAZAPI", "SAIZAP"], default=None)
     p.add_argument("--instance-mode", choices=["CREATE", "LINK"], default=None)
     p.add_argument("--external-id", default=None, help="LINK: id (UAZAPI) ou name (SAIZAP) da instancia")
     p.add_argument("--instance-name", default=None)
-    p.add_argument("--tier", choices=["START", "PLENO", "PREMIUM"], default="START")
-    p.add_argument("--has-crm", action="store_true")
-    p.add_argument("--has-disparador", action="store_true")
+    p.add_argument("--tier", choices=["START", "PLENO", "PREMIUM"], default="PLENO")
+    p.add_argument("--has-crm", dest="has_crm", action="store_const", const=True, default=None,
+                   help="Habilita CRM (sem a flag: pergunta interativa)")
+    p.add_argument("--has-disparador", dest="has_disparador", action="store_const", const=True, default=None,
+                   help="Habilita Disparador (sem a flag: pergunta interativa)")
     p.add_argument("--gemini-key", default=None, help="Pula gcloud e usa esta chave")
     p.add_argument("--skip-gcp", action="store_true", help="Pergunta a chave Gemini manualmente")
     p.add_argument("--gcp-billing", default=None, help="Billing account id (default: GCP_BILLING_ID do .env)")
@@ -230,7 +241,10 @@ def main():
     ydoc = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
     raw_yaml = yaml_path.read_text(encoding="utf-8")
 
-    business_name = args.name or str((ydoc.get("business") or {}).get("name") or slug)
+    business_name = args.name
+    if not business_name:
+        default_name = str((ydoc.get("business") or {}).get("name") or slug)
+        business_name = ask("Nome do negocio", default_name)
     assistant_name = str((ydoc.get("assistant") or {}).get("name") or "Assistente")
     niche = str(ydoc.get("niche") or "academia")
     calendar_id = str(((ydoc.get("appointments") or {}).get("google_calendar") or {}).get("calendar_id") or "")
@@ -249,12 +263,22 @@ def main():
     if instance_mode == "LINK" and not external_id:
         external_id = ask("externalId da instancia (id UAZAPI / name SAIZAP)")
 
+    # modulos (flags ou pergunta interativa)
+    has_crm = args.has_crm
+    if has_crm is None:
+        has_crm = ask_yesno("Habilitar CRM?", default=False)
+    has_disparador = args.has_disparador
+    if has_disparador is None:
+        has_disparador = ask_yesno("Habilitar Disparador?", default=False)
+
     check = setup.check_prereqs  # valida gh/gh auth
     check()
 
     print("\n" + "=" * 60)
     print(f"  ONBOARDING: {business_name}  (slug: {slug})")
     print(f"  Provider: {provider} / {instance_mode}   Tier: {args.tier}")
+    print(f"  Modulos : CRM={'sim' if has_crm else 'nao'}  Disparador={'sim' if has_disparador else 'nao'}")
+    print(f"  Alerta  : {args.alert_phone}")
     print("=" * 60)
 
     # ── [1] Gemini key ──────────────────────────────────────
@@ -333,8 +357,8 @@ def main():
         "provider": provider,
         "instanceMode": instance_mode,
         "assistenteIATier": args.tier,
-        "hasCRM": bool(args.has_crm),
-        "hasDisparador": bool(args.has_disparador),
+        "hasCRM": bool(has_crm),
+        "hasDisparador": bool(has_disparador),
         "assistantConfig": {
             "displayName": assistant_name,
             "businessHours": yaml_to_business_hours(ydoc),
