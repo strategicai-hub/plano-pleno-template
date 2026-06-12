@@ -19,7 +19,7 @@ from jinja2 import Environment, FileSystemLoader
 from app.client_data import load_client_data
 from app.services import sai_sync
 
-DEFAULT_NICHE = "academia"
+DEFAULT_NICHE = "generico"
 _SP_TZ = ZoneInfo("America/Sao_Paulo")
 
 
@@ -123,10 +123,16 @@ def build_prompt() -> str:
     niche = (data.get("niche") or DEFAULT_NICHE).strip()
     template_file = f"{niche}.j2"
     if not (prompts_dir / template_file).exists():
-        raise FileNotFoundError(
-            f"Prompt do nicho '{niche}' não encontrado em {prompts_dir / template_file}. "
-            f"Nichos disponíveis: {[p.stem for p in prompts_dir.glob('*.j2')]}"
+        # Nicho sem prompt dedicado: NUNCA quebrar o boot. Cai no prompt
+        # generico defensivo (funciona com qualquer client.yaml minimo) em vez
+        # de levantar excecao ou mascarar para "academia".
+        import logging
+        logging.getLogger(__name__).warning(
+            "Prompt do nicho '%s' nao encontrado; usando '%s.j2' (fallback generico). "
+            "Disponiveis: %s",
+            niche, DEFAULT_NICHE, [p.stem for p in prompts_dir.glob("*.j2")],
         )
+        template_file = f"{DEFAULT_NICHE}.j2"
     template = env.get_template(template_file)
     return (
         template.render(**data)

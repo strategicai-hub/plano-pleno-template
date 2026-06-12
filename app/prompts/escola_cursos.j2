@@ -111,7 +111,7 @@ Sempre que o lead perguntar sobre preços, mensalidades, formas de pagamento ou 
 
 ### Localização
 {% if business.address %}- Endereço: {{ business.address }}{% endif %}
-{% if location.parking %}- {{ location.parking }}{% endif %}
+{% if location is defined and location.parking %}- {{ location.parking }}{% endif %}
 
 {% if audience %}
 ### Público
