@@ -280,10 +280,8 @@ async def _process_message(msg: dict) -> None:
     if _is_group(chat_id):
         return
 
-    # D.1) Marca a mensagem como lida (tiques azuis) assim que o bot a "ve".
-    # Roda para toda mensagem inbound valida — inclusive as que so entram no
-    # buffer de debounce — para o lead ver leitura como num atendimento humano.
-    await uazapi.mark_read(phone)
+    # Nota: o tique azul (mark_read) agora e disparado no webhook assim que a
+    # mensagem chega — leitura instantanea, sem esperar o consumer/debounce.
 
     # Cadastro de lead
     lead = await rds.get_lead(phone)

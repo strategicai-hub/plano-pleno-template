@@ -86,22 +86,26 @@ async def send_presence(number: str, presence: str = "composing") -> None:
         logger.warning("Falha ao enviar presence %s para %s: %s", presence, number, e)
 
 
-async def mark_read(number: str) -> None:
-    """Marca o chat como lido (tiques azuis) para o numero.
+async def mark_read(message_id: str) -> None:
+    """Marca a(s) mensagem(ns) do lead como lida(s) -> tique azul no WhatsApp dele.
 
-    Endpoint correto deste servidor UAZAPI: POST /chat/read com {number}.
-    Chamar quando o bot "le" a mensagem do lead (logo apos receber), para o
-    lead enxergar os dois tiques azuis como num atendimento humano.
+    Endpoint correto deste servidor UAZAPI: POST /message/markread com {id: [...]}.
+    Chamado no webhook assim que a mensagem chega, para o lead ver os dois tiques
+    azuis instantaneamente (como num atendimento humano).
+
+    Fire-and-forget: qualquer falha so loga, nunca derruba o fluxo de recebimento.
     """
-    url = f"{settings.UAZAPI_BASE_URL}/chat/read"
-    payload = {"number": number}
+    if not message_id:
+        return
+    url = f"{settings.UAZAPI_BASE_URL}/message/markread"
+    payload = {"id": [message_id]}
     try:
         client = _get_client()
         resp = await client.post(url, content=_json_body(payload), headers=_headers())
         resp.raise_for_status()
-    except Exception as e:
-        # Leitura e nice-to-have — nunca derruba o fluxo principal.
-        logger.warning("Falha ao marcar chat lido para %s: %s", number, e)
+        logger.info("Mensagem %s marcada como lida (tique azul)", message_id)
+    except Exception as exc:
+        logger.warning("Falha ao marcar %s como lida: %s", message_id, exc)
 
 
 async def _send_media(number: str, media_type: str, file_url: str, delay: int = 4000) -> dict:

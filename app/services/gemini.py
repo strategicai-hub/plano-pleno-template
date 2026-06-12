@@ -27,7 +27,7 @@ from app.services.sai_metrics import log_message_async
 
 logger = logging.getLogger(__name__)
 
-_MODEL = "gemini-2.5-flash"
+_MODEL = "gemini-3.1-flash-lite"
 _client: Optional[genai.Client] = None
 
 
