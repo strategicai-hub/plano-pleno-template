@@ -5,6 +5,16 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Evita corrida na tag :latest. A esteira de onboarding empurra vários commits em
+# segundos (docker-compose, .gitignore, client.yaml). Sem isso, builds concorrentes
+# publicam :latest e o ÚLTIMO a terminar vence — que pode ser um commit ANTERIOR ao
+# client.yaml, subindo uma imagem sem o arquivo (container crasha em "client.yaml nao
+# encontrado"). cancel-in-progress cancela os builds antigos, deixando só o do último
+# commit (client.yaml) escrever o :latest.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
