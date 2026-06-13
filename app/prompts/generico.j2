@@ -121,7 +121,7 @@ Apresente brevemente os diferenciais da {{ business.name }}:
 
 Protocolo: só envie valores quando o contato perguntar.
 {% for p in products %}
-- {{ p.name }}{% if p.price %}: R$ {{ p.price }},00{% endif %}{% if p.description %}. {{ p.description }}{% endif %}
+- {{ p.name }}{% if p.price %}: {{ p.price }}{% endif %}{% if p.description %}. {{ p.description }}{% endif %}
 {% endfor %}
 {% endif %}
 {% if plans %}

@@ -180,7 +180,7 @@ Formato obrigatório da flag: [AGENDAR=YYYY-MM-DDTHH:MM|tipo]. Ex: [AGENDAR=2025
 
 Protocolo: só envie valores quando o contato perguntar.
 {% for p in products %}
-- {{ p.name }}: R$ {{ p.price }},00
+- {{ p.name }}{% if p.price %}: {{ p.price }}{% endif %}{% if p.description %}. {{ p.description }}{% endif %}
 {% endfor %}
 
 ### Pagamento e Política
