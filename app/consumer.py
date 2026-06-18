@@ -121,6 +121,19 @@ def _is_group(chat_id: str) -> bool:
     return "@g.us" in chat_id
 
 
+def _scrub_unknown_tags(s: str) -> str:
+    """Remove qualquer tag em colchetes no formato [FLAG] ou [FLAG=valor] que
+    nao seja uma tag de midia conhecida. Evita que flags internas escapem para
+    o lead quando a IA emite um formato inesperado (ex.: [CANCELAR_AGENDAMENTO=0]).
+    """
+    def _repl(m: "re.Match[str]") -> str:
+        token = m.group(0)
+        # Preserva tags de midia (ex.: [FOTO_X]); remove o resto.
+        return token if token in MEDIA_DICT else ""
+
+    return re.sub(r"\[[A-Z][A-Z0-9_]*(?:=[^\]]*)?\]", _repl, s).strip()
+
+
 def _parse_ai_response(text: str) -> tuple[list[dict], bool, bool, tuple[datetime, str] | None, bool]:
     """
     Parseia a resposta da IA:
@@ -161,10 +174,12 @@ def _parse_ai_response(text: str) -> tuple[list[dict], bool, bool, tuple[datetim
             logger.warning("AGENDAR com formato invalido: %r", iso_str)
         text = re.sub(r"\[AGENDAR=[^\]]+\]", "", text).strip()
 
+    # Aceita formato opcional =valor (ex.: =0/=1) caso a IA contamine a flag
+    # com o padrao das flags FINALIZADO/TRANSFERIR e emita [CANCELAR_AGENDAMENTO=0].
     cancelar_agendamento = False
-    if re.search(r"\[CANCELAR_AGENDAMENTO\]", text):
+    if re.search(r"\[CANCELAR_AGENDAMENTO(?:=[^\]]*)?\]", text):
         cancelar_agendamento = True
-        text = re.sub(r"\[CANCELAR_AGENDAMENTO\]", "", text).strip()
+        text = re.sub(r"\[CANCELAR_AGENDAMENTO(?:=[^\]]*)?\]", "", text).strip()
 
     if "|||" in text:
         raw_parts = [p.strip() for p in text.split("|||") if p.strip()]
@@ -179,7 +194,12 @@ def _parse_ai_response(text: str) -> tuple[list[dict], bool, bool, tuple[datetim
             media = MEDIA_DICT[tag]
             parts.append({"type": media["type"], "content": media["url"]})
         else:
-            parts.append({"type": "text", "content": part})
+            # Rede de seguranca: remove qualquer flag/tag em colchetes que tenha
+            # escapado do parsing (ex.: variacoes de formato como [FLAG=0]) para
+            # nunca vazar codigo interno para o lead. Tags de midia sao preservadas.
+            cleaned = _scrub_unknown_tags(part)
+            if cleaned:
+                parts.append({"type": "text", "content": cleaned})
 
     if not parts:
         parts = [{"type": "text", "content": text}]
