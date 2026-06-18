@@ -49,7 +49,11 @@ def _temporal_prefix() -> str:
     return (
         f"[CONTEXTO DO SISTEMA — não responda sobre isto, apenas use como referência: "
         f"agora são {now.strftime('%H:%M')} de {_WEEK_TC[now.weekday()]}, {now.strftime('%d/%m/%Y')}. "
-        f"Amanhã é {_WEEK_TC[tomorrow.weekday()]}, {tomorrow.strftime('%d/%m/%Y')}.]\n\n"
+        f"Amanhã é {_WEEK_TC[tomorrow.weekday()]}, {tomorrow.strftime('%d/%m/%Y')}. "
+        f"REGRA DO NOME: NÃO comece sua resposta com o nome da pessoa e NÃO repita o nome dela. "
+        f"Usar o nome em toda mensagem soa robotizado. O nome só pode aparecer DUAS vezes na conversa "
+        f"inteira: uma ao recebê-lo (\"Prazer, {{nome}}\") e uma na confirmação do fechamento/agendamento. "
+        f"Em TODAS as outras mensagens, não cite o nome — siga o tom do prompt do nicho.]\n\n"
     )
 
 
