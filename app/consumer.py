@@ -188,7 +188,7 @@ def _parse_ai_response(text: str) -> tuple[list[dict], bool, bool, tuple[datetim
 
     parts = []
     for part in raw_parts:
-        tag_match = re.search(r"\[([A-Z_]+)\]", part)
+        tag_match = re.search(r"\[([A-Z0-9_]+)\]", part)
         if tag_match and f"[{tag_match.group(1)}]" in MEDIA_DICT:
             tag = f"[{tag_match.group(1)}]"
             media = MEDIA_DICT[tag]
