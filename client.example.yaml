@@ -128,6 +128,33 @@ differentials:
   - "Ambiente agradavel com musica e WiFi"
   - "Localizacao privilegiada com estacionamento facilitado"
 
+# ============================================================
+# NICHO corretora_seguros — chaves especificas (referencia)
+# ============================================================
+# O prompt app/prompts/corretora_seguros.j2 consome estas chaves.
+# O onboarding do SAI Comercial gera este bloco automaticamente
+# (generateOnboardingYaml, nicho CORRETORA_SEGUROS). Exemplo:
+#
+# insurance:
+#   experience: "8 anos"
+#   types: ["plano_saude", "plano_odontologico"]   # slugs do formulario
+#   types_other: "seguro viagem"
+#   main_products: "Plano de saude PME e odonto individual"
+#   carriers: ["Amil", "Bradesco Saude", "SulAmerica", "Unimed"]
+#   regions: "Grande Sao Paulo; todo o Brasil (online)"
+# icp:
+#   targets: ["pessoa_fisica_familia", "pme"]
+# quote:
+#   required_info: ["quantidade_vidas", "idade_beneficiarios", "cidade", "cnpj", "plano_atual"]
+#   required_info_other: "se tem doenca preexistente declarada"
+#   price_ranges: "Saude individual a partir de R$ 250/mes; odonto a partir de R$ 30/mes"
+#   sla: "em ate 2 horas uteis"
+#   process: "Coleto os dados, monto o comparativo nas operadoras e envio a proposta"
+# sales_process:
+#   main_objection: "Acham caro — mostro o comparativo e o custo de ficar sem plano"
+#   differentiator: "Comparativo entre operadoras + suporte pos-venda"
+#   support_after_sale: "Acompanho reajustes, sinistros e 2a via durante toda a vigencia"
+
 # Midias que a IA pode enviar via tags no prompt.
 # Formato: "[TAG]": {url: "https://...", type: "image|document|video"}
 media: {}
