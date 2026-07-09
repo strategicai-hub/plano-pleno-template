@@ -183,6 +183,25 @@ async def clear_chat_history(phone: str) -> None:
     await r.delete(keys.history_key(phone))
 
 
+async def has_chat_history(phone: str) -> bool:
+    r = await get_redis()
+    return await r.llen(keys.history_key(phone)) > 0
+
+
+# --------------- gate de espacamento de envios proativos ---------------
+
+async def set_dispatch_gate(ttl_seconds: int) -> None:
+    """Arma o gate anti-ban por `ttl_seconds` (aleatorio, definido no caller).
+    Nenhum envio proativo (1o contato / reativacao) sai enquanto ativo."""
+    r = await get_redis()
+    await r.set(keys.dispatch_gate_key(), "1", ex=max(int(ttl_seconds), 1))
+
+
+async def is_dispatch_gated() -> bool:
+    r = await get_redis()
+    return await r.exists(keys.dispatch_gate_key()) == 1
+
+
 # --------------- alerta de atendimento humano ---------------
 
 async def set_alert_sent(phone: str, ttl: int | None = None) -> None:

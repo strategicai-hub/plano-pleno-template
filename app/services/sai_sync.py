@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -341,6 +342,50 @@ async def cancel_appointment(
                 log.info(
                     "sai_sync: cancelamento reportado (slug=%s, phone=%s, body=%s)",
                     slug, payload["contactPhone"], res.text[:200],
+                )
+            else:
+                log.warning("sai_sync: POST %s -> %s: %s", url, res.status_code, res.text[:200])
+    except Exception as exc:
+        log.warning("sai_sync: POST %s falhou: %s", url, exc)
+
+
+async def report_lead_sent(
+    *,
+    external_id: str | None,
+    phone: str,
+    status: str = "SENT",
+    reason: str | None = None,
+) -> None:
+    """Reporta ao SAI que a 1a mensagem de um lead foi enviada.
+
+    Chamado logo apos mark_dispatch_sent. Fire-and-forget: nunca lanca. O SAI
+    localiza o lead por externalId (preferido) ou phoneE164 e marca SENT/FAILED,
+    migrando-o para a tabela 'Ja contatados' no painel.
+    """
+    cfg = await _active_config_async()
+    if not cfg:
+        log.warning("sai_sync: report_lead_sent descartado — sem binding (phone=%s)", phone)
+        return
+    slug, secret = cfg
+    payload: dict[str, Any] = {"status": status, "phoneE164": phone}
+    if external_id:
+        payload["externalId"] = external_id
+    if status == "SENT":
+        payload["sentAt"] = datetime.now(timezone.utc).isoformat()
+    elif reason:
+        payload["reason"] = reason
+    url = f"{settings.SAI_BASE_URL.rstrip('/')}/api/assistant/ingest/leads/by-slug/{slug}/sent"
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS) as client:
+            res = await client.post(
+                url,
+                json=payload,
+                headers={"x-ingest-secret": secret, "Content-Type": "application/json"},
+            )
+            if res.status_code == 200:
+                log.info(
+                    "sai_sync: lead reportado (slug=%s, externalId=%s, status=%s)",
+                    slug, external_id, status,
                 )
             else:
                 log.warning("sai_sync: POST %s -> %s: %s", url, res.status_code, res.text[:200])

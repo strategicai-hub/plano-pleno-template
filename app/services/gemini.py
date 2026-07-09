@@ -299,6 +299,83 @@ async def generate_reactivation_message(
         return ""
 
 
+async def generate_first_contact_message(
+    phone: str,
+    nome: str,
+    *,
+    observacao: str = "",
+) -> str:
+    """PLENO: gera o 1o contato para um lead recebido de origem externa (disparo
+    ativo, generico — serve qualquer nicho).
+
+    Temperatura alta de proposito: cada mensagem precisa sair com estrutura e
+    vocabulario diferentes (anti-ban Meta — texto identico em massa e o
+    principal gatilho de bloqueio). Retorna "" em falha; o caller
+    (followups/lead_dispatch.py) usa um template estatico de fallback.
+    """
+    client_data = load_client_data()
+    business_name = (client_data.get("business") or {}).get("name") or ""
+    assistant_name = ((client_data.get("assistant") or {}).get("name") or "").strip()
+
+    now = datetime.now(_SP_TZ_TC)
+    saudacao = "bom dia" if now.hour < 12 else ("boa tarde" if now.hour < 18 else "boa noite")
+    primeiro_nome = (nome or "").strip().split(" ")[0].title() if (nome or "").strip() else ""
+
+    prompt = (
+        f"Voce e {assistant_name or 'a assistente'}"
+        + (f" da {business_name}" if business_name else "")
+        + ".\n"
+        f"Um lead chamado {nome or '(sem nome)'} demonstrou interesse e deixou o contato "
+        "em um canal parceiro, e voce vai iniciar a conversa por WhatsApp.\n"
+        f"Horario atual: {now.strftime('%H:%M')} (saudacao adequada: {saudacao}).\n"
+        + (f"Observacao do cadastro: {observacao}\n" if observacao else "")
+        + "Escreva a PRIMEIRA mensagem iniciando essa conversa.\n"
+        "Regras obrigatorias:\n"
+        + (f"- Cumprimente pelo primeiro nome ({primeiro_nome}) com a saudacao do horario.\n"
+           if primeiro_nome else "- Cumprimente com a saudacao do horario.\n")
+        + "- Apresente-se brevemente pelo seu nome"
+        + (f" (e diga que fala em nome da {business_name})" if business_name else "")
+        + ".\n"
+        "- Diga que recebeu o contato/interesse dele.\n"
+        "- Termine com UMA pergunta de abertura para comecar a qualificacao.\n"
+        "- 2 a 4 frases, tom humano e proximo, SEM markdown, SEM asteriscos, no maximo 1 emoji.\n"
+        "- IMPORTANTE (anti-spam): varie a estrutura, a ordem das informacoes e o vocabulario — nunca repita um texto padrao.\n"
+        "Responda APENAS com o texto da mensagem."
+    )
+
+    # _get_client() dentro do try: se a key estiver ausente/invalida, o
+    # construtor levanta — e o caller precisa cair no template de fallback,
+    # nao em retry/failed do dispatch.
+    try:
+        client = _get_client()
+        t0 = time.monotonic()
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=_MODEL,
+            contents=[gtypes.Content(role="user", parts=[gtypes.Part.from_text(text=prompt)])],
+            config=gtypes.GenerateContentConfig(
+                temperature=0.9,
+                max_output_tokens=200,
+                thinking_config=_THINKING_OFF,
+            ),
+        )
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        inp, out, _ = _usage_tokens(response)
+        log_message_async(
+            lead_phone=phone,
+            direction="OUTBOUND",
+            kind="FIRST_CONTACT",
+            model=_MODEL,
+            input_tokens=inp,
+            output_tokens=out,
+            latency_ms=latency_ms,
+        )
+        return (response.text or "").strip()
+    except Exception:
+        logger.exception("Erro ao gerar 1o contato para %s", phone)
+        return ""
+
+
 async def analyze_image(image_bytes: bytes, phone: str = "") -> str:
     client = _get_client()
     t0 = time.monotonic()

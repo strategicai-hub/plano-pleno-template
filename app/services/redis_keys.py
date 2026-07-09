@@ -55,6 +55,14 @@ def processed_key(message_id: str) -> str:
     return f"{settings.PROJECT_SLUG}:processed:{message_id}"
 
 
+def dispatch_gate_key() -> str:
+    """Gate global de espacamento entre envios proativos (anti-ban Meta).
+
+    Enquanto a chave existir (TTL aleatorio setado apos cada envio), nenhum
+    outro disparo de 1o contato ou follow-up de reativacao sai."""
+    return f"{settings.PROJECT_SLUG}:lead_dispatch:gate"
+
+
 def session_log_key() -> str:
     return f"{settings.PROJECT_SLUG}:logs"
 

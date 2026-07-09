@@ -12,7 +12,7 @@ Tabelas:
 import logging
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import aiosqlite
@@ -49,6 +49,28 @@ CREATE TABLE IF NOT EXISTS appointments (
 );
 CREATE INDEX IF NOT EXISTS idx_appointments_scheduled ON appointments(scheduled_at, status);
 CREATE INDEX IF NOT EXISTS idx_appointments_phone ON appointments(phone);
+
+CREATE TABLE IF NOT EXISTS lead_dispatch_queue (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  phone TEXT NOT NULL,
+  nome TEXT,
+  email TEXT,
+  operadora TEXT,
+  observacao TEXT,
+  vidas TEXT,
+  source_phone TEXT,
+  raw_block TEXT,
+  external_id TEXT,
+  status TEXT DEFAULT 'pending',
+  attempts INTEGER DEFAULT 0,
+  scheduled_after TEXT,
+  created_at TEXT,
+  sent_at TEXT,
+  last_error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ldq_status_sched ON lead_dispatch_queue(status, scheduled_after, created_at);
+CREATE INDEX IF NOT EXISTS idx_ldq_phone_created ON lead_dispatch_queue(phone, created_at);
+CREATE INDEX IF NOT EXISTS idx_ldq_sent_at ON lead_dispatch_queue(sent_at);
 """
 
 
@@ -59,12 +81,30 @@ def _ensure_dir() -> None:
         os.makedirs(parent, exist_ok=True)
 
 
+# ALTERs idempotentes para bancos ja existentes (CREATE TABLE IF NOT EXISTS nao
+# adiciona colunas novas). Cada ADD COLUMN falha com OperationalError se a coluna
+# ja existe — engolimos o erro.
+_MIGRATIONS = [
+    "ALTER TABLE lead_dispatch_queue ADD COLUMN external_id TEXT",
+]
+
+
+def _apply_migrations_sync(con: sqlite3.Connection) -> None:
+    for stmt in _MIGRATIONS:
+        try:
+            con.execute(stmt)
+        except sqlite3.OperationalError:
+            pass
+    con.commit()
+
+
 def init_db_sync() -> None:
     _ensure_dir()
     con = sqlite3.connect(settings.SQLITE_PATH)
     try:
         con.executescript(SCHEMA)
         con.commit()
+        _apply_migrations_sync(con)
         logger.info("SQLite inicializado em %s", settings.SQLITE_PATH)
     finally:
         con.close()
@@ -74,6 +114,12 @@ async def init_db() -> None:
     _ensure_dir()
     async with aiosqlite.connect(settings.SQLITE_PATH) as db:
         await db.executescript(SCHEMA)
+        await db.commit()
+        for stmt in _MIGRATIONS:
+            try:
+                await db.execute(stmt)
+            except Exception:  # noqa: BLE001 — coluna ja existe
+                pass
         await db.commit()
     logger.info("SQLite inicializado em %s", settings.SQLITE_PATH)
 
@@ -345,3 +391,128 @@ async def list_all_leads() -> list[dict]:
         cur = await db.execute("SELECT * FROM leads ORDER BY updated_at DESC")
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
+
+
+# --------------- fila de disparo de 1o contato (leads externos) ---------------
+
+async def enqueue_lead_dispatch(
+    phone: str,
+    nome: str = "",
+    email: str = "",
+    operadora: str = "",
+    observacao: str = "",
+    vidas: str = "",
+    source_phone: str = "",
+    raw_block: str = "",
+    external_id: str = "",
+    dedup_hours: int = 72,
+    variants: Optional[set[str]] = None,
+) -> tuple[int, bool]:
+    """Enfileira um lead para o 1o contato. Retorna (id, created).
+
+    Dedup: se ja existe row pending/sent para o mesmo telefone (qualquer
+    variante com/sem 9o digito) criada dentro de `dedup_hours`, nao insere —
+    a mesma origem pode reenviar o mesmo lead e a UAZAPI pode reentregar o evento.
+    """
+    all_phones = set(variants or ()) | {phone}
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=dedup_hours)).isoformat()
+    placeholders = ",".join("?" * len(all_phones))
+    async with aiosqlite.connect(settings.SQLITE_PATH) as db:
+        cur = await db.execute(
+            f"""
+            SELECT id FROM lead_dispatch_queue
+            WHERE phone IN ({placeholders})
+              AND status IN ('pending', 'sent')
+              AND created_at >= ?
+            LIMIT 1
+            """,
+            list(all_phones) + [cutoff],
+        )
+        row = await cur.fetchone()
+        if row:
+            return row[0], False
+        cur = await db.execute(
+            """
+            INSERT INTO lead_dispatch_queue
+                (phone, nome, email, operadora, observacao, vidas,
+                 source_phone, raw_block, external_id, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+            """,
+            (phone, nome, email, operadora, observacao, vidas,
+             source_phone, raw_block, external_id, _now_iso()),
+        )
+        await db.commit()
+        return cur.lastrowid or 0, True
+
+
+async def get_pending_dispatches(now_iso: str, limit: int = 10) -> list[dict]:
+    """Leads pendentes de 1o contato, FIFO. Respeita scheduled_after (retry)."""
+    async with aiosqlite.connect(settings.SQLITE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            """
+            SELECT * FROM lead_dispatch_queue
+            WHERE status = 'pending'
+              AND (scheduled_after IS NULL OR scheduled_after <= ?)
+            ORDER BY created_at, id
+            LIMIT ?
+            """,
+            (now_iso, limit),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def count_dispatches_sent_since(since_iso: str) -> int:
+    async with aiosqlite.connect(settings.SQLITE_PATH) as db:
+        cur = await db.execute(
+            "SELECT COUNT(*) FROM lead_dispatch_queue WHERE status='sent' AND sent_at >= ?",
+            (since_iso,),
+        )
+        row = await cur.fetchone()
+        return int(row[0]) if row else 0
+
+
+async def mark_dispatch_sent(dispatch_id: int) -> None:
+    async with aiosqlite.connect(settings.SQLITE_PATH) as db:
+        await db.execute(
+            "UPDATE lead_dispatch_queue SET status='sent', sent_at=?, last_error=NULL WHERE id=?",
+            (_now_iso(), dispatch_id),
+        )
+        await db.commit()
+
+
+async def mark_dispatch_skipped(dispatch_id: int, reason: str) -> None:
+    async with aiosqlite.connect(settings.SQLITE_PATH) as db:
+        await db.execute(
+            "UPDATE lead_dispatch_queue SET status='skipped', last_error=? WHERE id=?",
+            (reason, dispatch_id),
+        )
+        await db.commit()
+
+
+async def mark_dispatch_failed(
+    dispatch_id: int,
+    error: str,
+    retry_after_iso: Optional[str] = None,
+    max_attempts: int = 3,
+) -> None:
+    """Registra falha de envio. Mantem pending com backoff (scheduled_after)
+    ate `max_attempts`; depois marca failed definitivo."""
+    async with aiosqlite.connect(settings.SQLITE_PATH) as db:
+        cur = await db.execute(
+            "SELECT attempts FROM lead_dispatch_queue WHERE id=?", (dispatch_id,)
+        )
+        row = await cur.fetchone()
+        attempts = (row[0] if row and row[0] else 0) + 1
+        if attempts >= max_attempts or not retry_after_iso:
+            await db.execute(
+                "UPDATE lead_dispatch_queue SET status='failed', attempts=?, last_error=? WHERE id=?",
+                (attempts, (error or "")[:500], dispatch_id),
+            )
+        else:
+            await db.execute(
+                "UPDATE lead_dispatch_queue SET attempts=?, last_error=?, scheduled_after=? WHERE id=?",
+                (attempts, (error or "")[:500], retry_after_iso, dispatch_id),
+            )
+        await db.commit()

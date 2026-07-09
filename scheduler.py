@@ -6,9 +6,12 @@ Jobs:
   estagios. Cadencia configuravel em client.yaml > followups.reactivation.
 - appointment_reminder: lembrete X horas antes de cada agendamento. Cadencia
   configuravel em client.yaml > followups.appointment_reminder.
+- lead_dispatch: 1o contato para leads recebidos de origem externa (cron 1 min;
+  janela/espacamento/cap em client.yaml > lead_dispatch).
 
 Flag FOLLOWUP_DRY_RUN=true loga o que seria enviado sem chamar UAZAPI.
-Habilitacao individual de cada job via followups.<job>.enabled no client.yaml.
+Habilitacao individual de cada job via followups.<job>.enabled no client.yaml
+(lead_dispatch.enabled fica no topo do yaml, fora de followups).
 """
 import asyncio
 import logging
@@ -19,7 +22,7 @@ from apscheduler.triggers.cron import CronTrigger
 from app.client_data import load_client_data
 from app.config import settings
 from app.db import init_db_sync
-from app.followups import appointment_reminder, reactivation
+from app.followups import appointment_reminder, lead_dispatch, reactivation
 
 logging.basicConfig(
     level=logging.INFO,
@@ -72,6 +75,25 @@ async def main() -> None:
             coalesce=True,
         )
         logger.info("job appointment_reminder: cadencia %d min", minute)
+
+    ld_cfg = (load_client_data() or {}).get("lead_dispatch") or {}
+    if ld_cfg.get("enabled", False):
+        # Cron por minuto de proposito: janela de dias/horario, gate de
+        # espacamento aleatorio e cap diario sao verificados dentro do job.
+        scheduler.add_job(
+            lead_dispatch.run,
+            CronTrigger(minute="*", timezone=tz),
+            id="lead_dispatch",
+            max_instances=1,
+            coalesce=True,
+        )
+        logger.info(
+            "job lead_dispatch: cron 1 min, dias %s, janela %s-%s, espacamento %s-%s min, cap %s/dia",
+            ld_cfg.get("days", "mon-fri"),
+            ld_cfg.get("hours_start", "08:00"), ld_cfg.get("hours_end", "18:00"),
+            ld_cfg.get("spacing_minutes_min", 3), ld_cfg.get("spacing_minutes_max", 8),
+            ld_cfg.get("daily_cap", 60),
+        )
 
     if not scheduler.get_jobs():
         logger.warning("Nenhum job habilitado em client.yaml > followups. Scheduler ocioso.")
