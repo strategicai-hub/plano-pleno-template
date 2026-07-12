@@ -83,6 +83,64 @@ def _compute_closed_days_block(horizon_days: int = 90) -> str:
     )
 
 
+def _format_price_cents(cents) -> str | None:
+    """Converte priceCents (int) do snapshot do painel em "R$ 1.234,56".
+
+    None/valor invalido -> None (o template renderiza "consulte" nesse caso).
+    """
+    if cents is None:
+        return None
+    try:
+        reais = int(cents) / 100
+    except (TypeError, ValueError):
+        return None
+    # f-string sai em formato en-US ("1,234.56"); troca para pt-BR ("1.234,56").
+    s = f"{reais:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
+    return f"R$ {s}"
+
+
+def _normalize_snapshot_product(p: dict) -> dict:
+    """Molda um produto do snapshot ({name, priceCents, description}) no formato
+    que os templates .j2 ja consomem ({name, price, description})."""
+    return {
+        "name": (p.get("name") or "").strip(),
+        "price": _format_price_cents(p.get("priceCents")),
+        "description": (p.get("description") or "").strip(),
+    }
+
+
+def _merge_sai_snapshot(data: dict) -> dict:
+    """Funde o snapshot do Painel IA WhatsApp (SAI, via Redis) sobre o client.yaml.
+
+    Em producao o painel e a fonte de verdade:
+      - assistant.name          <- displayName cadastrado no painel
+      - assistant.business_hours <- horario de funcionamento do painel
+      - products                <- catalogo do painel. No nicho corretor de
+        imoveis, cada empreendimento ativo entra aqui como um item de produto
+        (nome "Empreendimento: X" + ficha rotulada na description).
+
+    client.yaml continua como fallback quando o Redis esta vazio (bot recem-subido
+    ou falha de sync). So sobrescreve quando o snapshot traz o dado nao-vazio, para
+    nao apagar o que veio do client.yaml.
+    """
+    snap = sai_sync.load_snapshot_sync()
+    if not snap:
+        return data
+    assistant = dict(data.get("assistant") or {})
+    snap_assistant = snap.get("assistant") or {}
+    display_name = (snap_assistant.get("displayName") or "").strip()
+    if display_name:
+        assistant["name"] = display_name
+    business_hours = snap_assistant.get("businessHours")
+    if business_hours:
+        assistant["business_hours"] = business_hours
+    data["assistant"] = assistant
+    products = snap.get("products")
+    if products:
+        data["products"] = [_normalize_snapshot_product(p) for p in products if p]
+    return data
+
+
 def _compute_time_context_block() -> str:
     """Bloco autoritativo de data/hora atual em Sao Paulo.
 
@@ -116,6 +174,7 @@ def build_prompt() -> str:
         keep_trailing_newline=True,
     )
     data = dict(load_client_data())
+    data = _merge_sai_snapshot(data)
     assistant = dict(data.get("assistant") or {})
     assistant["greeting"] = _compute_time_greeting()
     data["assistant"] = assistant
