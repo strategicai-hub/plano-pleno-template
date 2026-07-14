@@ -24,10 +24,11 @@ from app.config import settings
 from app.consumer import _parse_ai_response
 from app.services import gemini, redis_service as rds
 
-# Prefixo na RAIZ (espelha sai_router "/sai"), NAO sob WEBHOOK_PATH — o SAI
-# anexa "/sim/*" direto na baseUrl do chatbot, igual faz com "/sai/*".
+# Prefixo sob o WEBHOOK_PATH (mesmo que sai_router "/sai") — o Traefik roteia
+# por PathPrefix(/<slug>) SEM strip, entao as rotas precisam viver sob /<slug>.
+# O SAI anexa "/sim/*" na baseUrl do chatbot (que ja inclui o /<slug>).
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/sim")
+router = APIRouter(prefix=f"{settings.WEBHOOK_PATH}/sim")
 
 
 def _sim_phone(session_id: str) -> str:

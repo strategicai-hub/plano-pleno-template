@@ -10,7 +10,7 @@ from app.services import redis_service, lead_intake
 from app.client_data import load_client_data
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/sai")
+router = APIRouter(prefix=f"{settings.WEBHOOK_PATH}/sai")
 
 
 class BlockBody(BaseModel):
