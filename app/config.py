@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     # App
     WEBHOOK_PATH: str = ""
     DEBOUNCE_SECONDS: int = 30
+    # Debounce do SIMULADOR (endpoints /sim/*). Independente do de producao:
+    # o cliente testando pelo link agrega rajadas com 15s.
+    SIM_DEBOUNCE_SECONDS: int = 15
     BLOCK_TTL_SECONDS: int | None = None  # deprecated: TTL agora é calculado dinamicamente até amanhã 08:00 SP
 
     # Alerta de atendimento humano

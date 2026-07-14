@@ -99,7 +99,7 @@ async def chat_test_post(body: ChatTestBody):
     """Envia mensagem de teste para a IA. NAO chama UAZAPI."""
     phone = _test_phone(body.phone)
     response_text, tokens = await gemini.chat(phone, body.message)
-    parts, finalizado, transferir, _ = _parse_ai_response(response_text)
+    parts, finalizado, transferir, *_ = _parse_ai_response(response_text)
     return {
         "raw": response_text,
         "parts": parts,
@@ -132,7 +132,7 @@ async def chat_test_history(phone: str = "5511999999999"):
             role = entry.get("type", "")
             content = entry.get("data", {}).get("content", "")
             if role == "model":
-                parts, _, _, _ = _parse_ai_response(content)
+                parts, *_ = _parse_ai_response(content)
             else:
                 parts = [{"type": "text", "content": content}]
             history.append({"role": role, "parts": parts})

@@ -136,7 +136,7 @@ async def chat(phone: str, user_message: str, lead_name: str = "") -> tuple[str,
     return ai_text, tokens
 
 
-async def transcribe_audio(audio_bytes: bytes, phone: str = "") -> str:
+async def transcribe_audio(audio_bytes: bytes, phone: str = "", mime_type: str = "audio/ogg") -> str:
     client = _get_client()
     t0 = time.monotonic()
     response = await asyncio.to_thread(
@@ -149,7 +149,7 @@ async def transcribe_audio(audio_bytes: bytes, phone: str = "") -> str:
                     gtypes.Part.from_text(
                         text="Transcreva essa gravacao de audio fielmente. Retorne APENAS o texto transcrito, sem comentarios."
                     ),
-                    gtypes.Part.from_bytes(data=audio_bytes, mime_type="audio/ogg"),
+                    gtypes.Part.from_bytes(data=audio_bytes, mime_type=mime_type or "audio/ogg"),
                 ],
             )
         ],
@@ -376,7 +376,7 @@ async def generate_first_contact_message(
         return ""
 
 
-async def analyze_image(image_bytes: bytes, phone: str = "") -> str:
+async def analyze_image(image_bytes: bytes, phone: str = "", mime_type: str = "image/jpeg") -> str:
     client = _get_client()
     t0 = time.monotonic()
     response = await asyncio.to_thread(
@@ -387,7 +387,7 @@ async def analyze_image(image_bytes: bytes, phone: str = "") -> str:
                 role="user",
                 parts=[
                     gtypes.Part.from_text(text="Descreva esta imagem em ate 50 palavras, em portugues."),
-                    gtypes.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+                    gtypes.Part.from_bytes(data=image_bytes, mime_type=mime_type or "image/jpeg"),
                 ],
             )
         ],
