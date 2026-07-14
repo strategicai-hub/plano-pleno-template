@@ -19,7 +19,7 @@ from app.images import MEDIA_DICT
 from app.services import calendar as calendar_facade
 from app.services import redis_service as rds
 from app.services import uazapi
-from app.services.gemini import chat as gemini_chat, transcribe_audio, analyze_image, generate_summary
+from app.services.gemini import chat as gemini_chat, transcribe_audio, analyze_image, generate_summary, generate_handoff_summary
 from app.services.rabbitmq import consume
 from app.services.redis_keys import session_log_key
 from app.services import sai_sync
@@ -488,13 +488,25 @@ async def _maybe_send_alert(phone: str, lead: dict, user_msg: str) -> None:
         log(f"[TOOL ALERTA_EQUIPE] Ignorado - alerta ja enviado recentemente para {phone}")
         return
 
-    contact = lead.get("name", "") or phone
-    motivo = user_msg.strip()[:120] or "Transferencia solicitada pela IA"
-    log(f"[TOOL ALERTA_EQUIPE] Executando(phone={phone}, motivo={motivo[:80]})")
+    contact = (lead.get("name") or "").strip() or "(nome nao informado)"
+    log(f"[TOOL ALERTA_EQUIPE] Executando(phone={phone}, lead={contact})")
+
+    # Briefing por IA: resumo da qualificacao + motivo do atendimento humano.
+    briefing = ""
+    try:
+        briefing = await generate_handoff_summary(phone)
+    except Exception:
+        logger.exception("Erro ao gerar briefing de handoff para %s", phone)
+    if not briefing:
+        # Fallback: sem historico/IA, usa a ultima mensagem do lead como motivo.
+        motivo = user_msg.strip()[:200] or "Transferencia solicitada pela IA"
+        briefing = f"Motivo do atendimento humano: {motivo}"
+
     alert_text = (
         f"\U0001f6a8 ATENDIMENTO HUMANO \U0001f6a8\n"
-        f"Contato: {contact} ({phone})\n"
-        f"Motivo: {motivo}"
+        f"Lead: {contact}\n"
+        f"WhatsApp: {phone}\n\n"
+        f"{briefing}"
     )
     try:
         await uazapi.send_text(settings.ALERT_PHONE, alert_text)

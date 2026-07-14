@@ -226,6 +226,65 @@ async def generate_summary(phone: str) -> str:
         return ""
 
 
+async def generate_handoff_summary(phone: str) -> str:
+    """Briefing para a equipe humana no handoff [TRANSFERIR=1]: resumo da
+    qualificacao do lead + motivo provavel do atendimento humano, a partir do
+    historico recente. Retorna "" em falha (o caller usa um fallback)."""
+    history = await get_chat_history(phone)
+    if not history:
+        return ""
+
+    lines = []
+    for entry in history[-12:]:
+        role = "Atendente" if entry.get("role") == "model" else "Lead"
+        text = entry.get("parts", [{}])[0].get("text", "")
+        if text:
+            lines.append(f"{role}: {text[:240]}")
+    if not lines:
+        return ""
+
+    prompt = (
+        "Voce faz o briefing para a equipe humana que vai assumir este "
+        "atendimento de WhatsApp. Com base na conversa abaixo, escreva EXATAMENTE "
+        "neste formato (duas linhas):\n"
+        "Resumo da qualificacao: <1 a 2 frases sobre quem e o lead, o que ele "
+        "quer e os dados ja coletados>\n"
+        "Motivo do atendimento humano: <1 frase com o porque de o atendimento "
+        "humano ter sido acionado agora>\n\n"
+        "Seja objetivo, em portugues, sem markdown e sem asteriscos.\n\n"
+        "Conversa:\n" + "\n".join(lines)
+    )
+
+    client = _get_client()
+    try:
+        t0 = time.monotonic()
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=_MODEL,
+            contents=[gtypes.Content(role="user", parts=[gtypes.Part.from_text(text=prompt)])],
+            config=gtypes.GenerateContentConfig(
+                temperature=0.3,
+                max_output_tokens=200,
+                thinking_config=_THINKING_OFF,
+            ),
+        )
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        inp, out, _ = _usage_tokens(response)
+        log_message_async(
+            lead_phone=phone,
+            direction="INBOUND",
+            kind="HANDOFF_SUMMARY",
+            model=_MODEL,
+            input_tokens=inp,
+            output_tokens=out,
+            latency_ms=latency_ms,
+        )
+        return (response.text or "").strip()
+    except Exception:
+        logger.exception("Erro ao gerar briefing de handoff para %s", phone)
+        return ""
+
+
 async def generate_reactivation_message(
     phone: str,
     nome: str,
