@@ -155,6 +155,23 @@ differentials:
 #   differentiator: "Comparativo entre operadoras + suporte pos-venda"
 #   support_after_sale: "Acompanho reajustes, sinistros e 2a via durante toda a vigencia"
 
+# ============================================================
+# NICHO corretor_imoveis — chaves especificas (referencia)
+# ============================================================
+# O prompt app/prompts/corretor_imoveis.j2 consome estas chaves.
+# O onboarding do SAI Comercial gera este bloco automaticamente
+# (generateOnboardingYaml, nicho CORRETOR_IMOVEIS). Para pessoa fisica,
+# business.name deve ser so o nome (sem "Corretor/Corretora" na frente).
+# Exemplo:
+#
+# realestate:
+#   model: empreendimentos          # empreendimentos | avulsos | ambos
+#   transactions: venda_locacao     # venda | locacao | venda_locacao (so p/ avulsos/ambos)
+#   mcmv: nao                        # sim_todos | alguns | nao (so p/ empreendimentos/ambos)
+#   broker_title: corretor          # corretor | corretora — define genero na apresentacao
+# leadflow:
+#   direction: inbound              # inbound | outbound | ambos
+
 # Midias que a IA pode enviar via tags no prompt.
 # Formato: "[TAG]": {url: "https://...", type: "image|document|video"}
 media: {}
