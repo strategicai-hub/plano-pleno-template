@@ -167,6 +167,8 @@ differentials:
 # realestate:
 #   model: empreendimentos          # empreendimentos | avulsos | ambos
 #   transactions: venda_locacao     # venda | locacao | venda_locacao (so p/ avulsos/ambos)
+#   # No SAI a pergunta do onboarding e multiselect (empreendimentos / venda_avulsos /
+#   # locacao_avulsos); deriveRealestate() converte p/ model+transactions (contrato inalterado).
 #   mcmv: nao                        # sim_todos | alguns | nao (so p/ empreendimentos/ambos)
 #   broker_title: corretor          # corretor | corretora — define genero na apresentacao
 # leadflow:
