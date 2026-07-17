@@ -66,18 +66,25 @@ def github_api(method: str, path: str, token: str, data: dict | None = None):
 
 
 def portainer_delete(path: str) -> int:
-    """DELETE no Portainer tolerando corpo vazio (204). Retorna status HTTP."""
+    """DELETE no Portainer tolerando corpo vazio (204). Retorna status HTTP.
+
+    Timeout largo: remover uma stack derruba os services antes de responder
+    (pode passar de 60s). Timeout no meio deixa a remocao concluir no servidor
+    — rodar de novo resolve o registro remanescente.
+    """
     req = urllib.request.Request(
         f"{setup.PORTAINER_URL}/api{path}",
         method="DELETE",
         headers={"X-API-Key": setup.PORTAINER_TOKEN},
     )
     try:
-        with urllib.request.urlopen(req, context=setup._SSL, timeout=60) as r:
+        with urllib.request.urlopen(req, context=setup._SSL, timeout=180) as r:
             return r.status
     except urllib.error.HTTPError as e:
+        print(f"    ERRO Portainer DELETE ({e.code}): {e.read().decode()[:200]}")
         return e.code
-    except Exception:
+    except Exception as e:
+        print(f"    ERRO Portainer DELETE: {e}")
         return 0
 
 
