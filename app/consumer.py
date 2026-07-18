@@ -260,6 +260,24 @@ async def _process_message(msg: dict) -> None:
         raw = msg.get("raw_message") or {}
         via_painel = bool(raw.get("wasSentByApi"))
         origem = "Painel SAI" if via_painel else "WhatsApp"
+        # Idempotencia ANTES de gravar historico: reentrega do mesmo eco pela
+        # UAZAPI nao pode duplicar a mensagem da atendente no contexto.
+        if message_id and not await rds.mark_processed(message_id):
+            logger.info("Eco fromMe %s ja processado (reentrega) - ignorando", message_id)
+            return
+        # Grava a mensagem da atendente no historico do Gemini (role "model",
+        # como se o bot tivesse dito). Sem isso o bot retoma a conversa sem
+        # saber o que a humana falou e se reapresenta do zero ao ser liberado.
+        if msg_type in TEXT_TYPES and msg_text:
+            await rds.append_chat_history(phone, "model", msg_text)
+        elif msg_type == "AudioMessage":
+            await rds.append_chat_history(phone, "model", "[Audio enviado pelo atendente humano]")
+        elif msg_type == "ImageMessage":
+            caption = msg.get("caption", "")
+            texto = "[Imagem enviada pelo atendente humano]"
+            if caption:
+                texto += f" Legenda: {caption}"
+            await rds.append_chat_history(phone, "model", texto)
         log(_human(origem, f"[{phone}] agente bloqueado ate amanha 08:00 SP"))
         logger.info("Humano assumiu chat %s via %s - agente bloqueado ate amanha 08:00 SP", chat_id, origem)
         _save_session_log(phone)
@@ -293,7 +311,20 @@ async def _process_message(msg: dict) -> None:
         if await rds.clear_stale_legacy_block(phone):
             logger.info("Bloqueio legado vazio removido para %s", phone)
         else:
-            logger.info("Agente bloqueado para %s - ignorando", chat_id)
+            # Acumula a mensagem do lead no historico mesmo com o bot calado —
+            # quando o assistente for liberado, retoma com o contexto completo
+            # do atendimento humano em vez de um buraco na conversa.
+            if msg_type in TEXT_TYPES and msg_text:
+                await rds.append_chat_history(phone, "user", msg_text)
+            elif msg_type == "AudioMessage":
+                await rds.append_chat_history(phone, "user", "[Audio recebido durante atendimento humano]")
+            elif msg_type == "ImageMessage":
+                caption = msg.get("caption", "")
+                texto = "[Imagem recebida durante atendimento humano]"
+                if caption:
+                    texto += f" Legenda: {caption}"
+                await rds.append_chat_history(phone, "user", texto)
+            logger.info("Agente bloqueado para %s - msg registrada no historico, sem resposta", chat_id)
             return
 
     # D) Filtra grupos

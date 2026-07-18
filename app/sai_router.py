@@ -38,6 +38,12 @@ class DispatchContextBody(BaseModel):
     empreendimentoFicha: str | None = None
 
 
+class HistoryBody(BaseModel):
+    phone: str
+    role: str      # "attendant" (atendente humano) | "lead"
+    content: str
+
+
 @router.post("/block")
 async def block_phone(
     body: BlockBody,
@@ -95,6 +101,35 @@ async def receive_leads(
         len(leads), enqueued, skipped, invalid, tenant_slug,
     )
     return {"ok": True, "enqueued": enqueued, "deduped": skipped, "invalid": invalid}
+
+
+@router.post("/history")
+async def push_history(
+    body: HistoryBody,
+    x_ingest_secret: str | None = Header(default=None, alias="x-ingest-secret"),
+):
+    """Acumula no historico Redis uma mensagem que o bot nao veria, sem gerar
+    resposta da IA.
+
+    Chamado fire-and-forget pelo SAI Comercial quando o gate de pausa suprime o
+    relay do inbound ao bot (IA pausada — o lead escreveu durante o atendimento
+    humano) ou quando o provider nao tem eco fromMe (API Oficial Meta — mensagem
+    da atendente). role="attendant" grava como fala do bot (model); role="lead"
+    grava como fala do lead (user). Assim, ao religar a IA, o bot retoma a
+    conversa com o contexto completo em vez de se reapresentar do zero.
+    """
+    if not settings.SAI_INGEST_SECRET or x_ingest_secret != settings.SAI_INGEST_SECRET:
+        raise HTTPException(status_code=401, detail="invalid secret")
+
+    phone = re.sub(r"\D+", "", body.phone or "")
+    content = (body.content or "").strip()
+    if not phone or not content:
+        raise HTTPException(status_code=400, detail="phone e content obrigatorios")
+
+    role = "model" if body.role == "attendant" else "user"
+    await redis_service.append_chat_history(phone, role, content)
+    logger.info("sai_router: /history registrou %s (%d chars) para %s", body.role, len(content), phone)
+    return {"ok": True, "phone": phone, "role": body.role}
 
 
 _ROUTE_TOKENS = {"LOCACAO", "VENDA_IMOVEL", "VENDA_EMPREENDIMENTO"}
