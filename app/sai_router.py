@@ -2,11 +2,11 @@
 import logging
 import re
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
 
 from app.config import settings
-from app.services import redis_service, lead_intake
+from app.services import redis_service, lead_intake, sai_sync
 from app.client_data import load_client_data
 
 logger = logging.getLogger(__name__)
@@ -42,6 +42,67 @@ class HistoryBody(BaseModel):
     phone: str
     role: str      # "attendant" (atendente humano) | "lead"
     content: str
+
+
+class BindBody(BaseModel):
+    tenantSlug: str | None = None
+    ingestSecret: str | None = None
+
+
+@router.post("/bind")
+async def bind_tenant(
+    body: BindBody,
+    x_registration_token: str | None = Header(default=None, alias="x-registration-token"),
+):
+    """Vincula/desvincula este chatbot a um tenant do SAI.
+
+    Chamado pelo SAI quando o super admin liga tenant -> chatbot no painel
+    admin. Grava {tenantSlug, ingestSecret} no Redis; a partir daí o push de
+    config e o polling passam a funcionar sem env var.
+    """
+    if (
+        not settings.SAI_REGISTRATION_TOKEN
+        or x_registration_token != settings.SAI_REGISTRATION_TOKEN
+    ):
+        raise HTTPException(status_code=401, detail="invalid token")
+
+    if body.tenantSlug and body.ingestSecret:
+        await sai_sync.save_binding(body.tenantSlug, body.ingestSecret)
+        return {"ok": True, "bound": True, "tenantSlug": body.tenantSlug}
+
+    await sai_sync.clear_binding()
+    return {"ok": True, "bound": False}
+
+
+@router.post("/config")
+async def receive_config(
+    request: Request,
+    x_ingest_secret: str | None = Header(default=None, alias="x-ingest-secret"),
+):
+    """Recebe o snapshot completo do Painel IA WhatsApp (push a cada Save).
+
+    O snapshot traz displayName, horarios e o catalogo de produtos — no nicho
+    corretor de imoveis, cada empreendimento ativo entra no catalogo como um
+    item com a ficha completa. Gravado em Redis, o prompt builder passa a usar
+    esses dados em QUALQUER conversa (inclusive lead inbound), nao so no
+    disparo.
+    """
+    cfg = await sai_sync._active_config_async()
+    expected = cfg[1] if cfg else (settings.SAI_INGEST_SECRET or "")
+    if not expected or x_ingest_secret != expected:
+        raise HTTPException(status_code=401, detail="invalid secret")
+
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload invalido")
+
+    tenant_slug = payload.get("tenantSlug")
+    if cfg and tenant_slug and tenant_slug != cfg[0]:
+        raise HTTPException(status_code=400, detail="tenantSlug mismatch")
+
+    await sai_sync.save_snapshot(payload)
+    logger.info("sai_router: snapshot recebido via push (tenantSlug=%s)", tenant_slug)
+    return {"ok": True}
 
 
 @router.post("/block")
