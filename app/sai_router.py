@@ -100,6 +100,12 @@ async def receive_config(
     if cfg and tenant_slug and tenant_slug != cfg[0]:
         raise HTTPException(status_code=400, detail="tenantSlug mismatch")
 
+    # Bot que subiu so com SAI_INGEST_SECRET no env (sem SAI_TENANT_SLUG) nao
+    # tem como saber em que chave gravar — aprende o slug pelo proprio payload
+    # e persiste como binding, o que tambem liga o polling de fallback.
+    if not cfg and tenant_slug:
+        await sai_sync.save_binding(tenant_slug, expected)
+
     await sai_sync.save_snapshot(payload)
     logger.info("sai_router: snapshot recebido via push (tenantSlug=%s)", tenant_slug)
     return {"ok": True}
