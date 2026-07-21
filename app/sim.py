@@ -60,6 +60,11 @@ class SimResetBody(BaseModel):
     session_id: str
 
 
+class SimSeedBody(BaseModel):
+    session_id: str
+    text: str
+
+
 async def _normalize(body: SimMessageBody, phone: str) -> str:
     """Converte o item recebido (texto/audio/imagem) no texto que entra no chat.
 
@@ -141,6 +146,24 @@ async def sim_reset(
     _check_secret(x_sim_secret)
     phone = _sim_phone(body.session_id)
     await rds.reset_lead_state(phone)
+    return {"ok": True}
+
+
+@router.post("/seed")
+async def sim_seed(
+    body: SimSeedBody,
+    x_sim_secret: str | None = Header(default=None, alias="x-sim-secret"),
+):
+    """Semeia a 'primeira mensagem enviada ao lead' (saudacao da empresa) no
+    historico da sessao como um turno JA DITO pelo assistente (role='model'),
+    SEM chamar o Gemini. Assim o bot da sequencia sem repetir a saudacao. O
+    texto vem do SAI Comercial (config do super-admin), nunca do navegador."""
+    _check_secret(x_sim_secret)
+    phone = _sim_phone(body.session_id)
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="texto vazio")
+    await rds.append_chat_history(phone, "model", text)
     return {"ok": True}
 
 
