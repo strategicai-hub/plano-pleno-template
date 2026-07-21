@@ -129,8 +129,10 @@ async def chat(phone: str, user_message: str, lead_name: str = "") -> tuple[str,
         latency_ms=latency_ms,
     )
 
-    await append_chat_history(phone, "user", user_message)
     if ai_text:
+        # Grava a fala do usuario so quando ha resposta: evita duplicar no historico
+        # durante o loop de retry por resposta vazia. Happy-path fica identico.
+        await append_chat_history(phone, "user", user_message)
         await append_chat_history(phone, "model", ai_text)
 
     return ai_text, tokens

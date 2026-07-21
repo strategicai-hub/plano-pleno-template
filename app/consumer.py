@@ -501,7 +501,7 @@ async def _run_ai_and_reply(phone: str, unified_msg: str, lead: dict, push_name:
         await db.mark_finalizado(phone)
         log(_ok(f"[{phone}] Conversa marcada como finalizada"))
 
-    await _update_summary_and_sheets(phone, lead.get("name", ""))
+    await _update_summary_and_sheets(phone, lead.get("name", ""), run_summary=finalizado or transferir)
 
     _save_session_log(phone)
 
@@ -641,24 +641,25 @@ async def _handle_cancelar(phone: str) -> None:
             log(_err(f"[TOOL CANCELAR] Falha ao notificar equipe - {alert_error}"))
 
 
-async def _update_summary_and_sheets(phone: str, name: str) -> None:
+async def _update_summary_and_sheets(phone: str, name: str, run_summary: bool = False) -> None:
     """Gera resumo da conversa, salva no Redis e na planilha do Google.
 
     Contribui para o buffer de log da chamada pai (_process_message) para ficar
     no mesmo evento do painel.
     """
-    log(f"[TOOL RESUMO] Executando generate_summary(phone={phone})")
     resumo = ""
-    try:
-        resumo = await generate_summary(phone)
-        if resumo:
-            await rds.update_lead(phone, resumo=resumo)
-            log(_ok(f"[TOOL RESUMO] Resultado: SUCESSO - {len(resumo)} caracteres salvos no Redis"))
-        else:
-            log(_warn(f"[TOOL RESUMO] Resultado: vazio - historico insuficiente para gerar resumo"))
-    except Exception as e:
-        log(_err(f"[TOOL RESUMO] Resultado: EXCECAO - {e}"))
-        logger.exception("Erro ao gerar resumo para %s: %s", phone, e)
+    if run_summary:
+        log(f"[TOOL RESUMO] Executando generate_summary(phone={phone})")
+        try:
+            resumo = await generate_summary(phone)
+            if resumo:
+                await rds.update_lead(phone, resumo=resumo)
+                log(_ok(f"[TOOL RESUMO] Resultado: SUCESSO - {len(resumo)} caracteres salvos no Redis"))
+            else:
+                log(_warn(f"[TOOL RESUMO] Resultado: vazio - historico insuficiente para gerar resumo"))
+        except Exception as e:
+            log(_err(f"[TOOL RESUMO] Resultado: EXCECAO - {e}"))
+            logger.exception("Erro ao gerar resumo para %s: %s", phone, e)
 
     log(f"[TOOL SHEETS] Executando upsert_lead(phone={phone})")
     try:
