@@ -167,6 +167,72 @@ def _compute_time_context_block() -> str:
     )
 
 
+def _as_list(value) -> list[str]:
+    """Normaliza um campo do client.yaml que pode vir como lista ou string."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [v.strip() for v in value.splitlines() if v.strip()]
+    if isinstance(value, (list, tuple)):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return []
+
+
+def _compute_mission_block(data: dict) -> str:
+    """Bloco da MISSAO da assistente (client.yaml > mission), valido para TODO nicho.
+
+    Vem das 3 ultimas perguntas do onboarding no SAI Comercial:
+      - mission.questions -> perguntas que a assistente deve fazer
+      - mission.documents -> documentos que ela deve pedir (opcional)
+      - mission.goal      -> criterio de conclusao do atendimento
+
+    Injetado no FINAL do prompt (modelos seguem melhor instrucoes no final).
+    Sem bloco `mission` no client.yaml -> string vazia (nao polui o prompt).
+    """
+    mission = data.get("mission") or {}
+    if not isinstance(mission, dict):
+        return ""
+    questions = _as_list(mission.get("questions"))
+    documents = _as_list(mission.get("documents"))
+    goal = (mission.get("goal") or "").strip() if isinstance(mission.get("goal"), str) else ""
+    if not (questions or documents or goal):
+        return ""
+
+    out = [
+        "\n\n---\n\n## MISSAO DA ASSISTENTE - REGRA ABSOLUTA",
+        "Este bloco foi definido pelo dono do negocio e tem prioridade sobre o "
+        "roteiro generico das fases acima. Conduza a conversa ate cumpri-lo.",
+    ]
+    if questions:
+        out.append(
+            "\n### Perguntas obrigatorias\n"
+            "Faca UMA pergunta por mensagem, na ordem abaixo, de forma natural "
+            "(nao leia como formulario). Nunca repita uma pergunta ja respondida "
+            "espontaneamente pelo contato. Se ele desviar do assunto, responda a "
+            "duvida dele e depois retome de onde parou:\n"
+            + "\n".join(f"{i}. {q}" for i, q in enumerate(questions, 1))
+        )
+    if documents:
+        out.append(
+            "\n### Documentos a solicitar\n"
+            "Peca um documento por vez, explicando em uma linha para que serve. "
+            "Aceite foto/arquivo enviado pelo WhatsApp e confirme o recebimento "
+            "('Recebi, obrigada.'). Se o contato nao tiver agora, siga em frente e "
+            "retome depois - nunca insista mais de uma vez seguida. PROIBIDO pedir "
+            "senha, codigo de acesso, cartao ou dado bancario:\n"
+            + "\n".join(f"- {d}" for d in documents)
+        )
+    if goal:
+        out.append(
+            "\n### Objetivo final\n"
+            f"{goal}\n\n"
+            "Enquanto esse objetivo nao for atingido, mantenha a conversa avancando. "
+            "Assim que for atingido, faca um resumo curto do que foi coletado, avise "
+            "que a equipe vai assumir e emita [TRANSFERIR=1]."
+        )
+    return "\n".join(out) + "\n"
+
+
 def build_prompt() -> str:
     prompts_dir = Path(__file__).parent / "prompts"
     env = Environment(
@@ -195,6 +261,7 @@ def build_prompt() -> str:
     template = env.get_template(template_file)
     return (
         template.render(**data)
+        + _compute_mission_block(data)
         + _compute_time_context_block()
         + _compute_closed_days_block()
     )
