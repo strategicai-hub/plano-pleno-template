@@ -428,13 +428,13 @@ def generate_env(repo_dir: Path, data: dict):
     env = f"""PROJECT_SLUG={data['slug']}
 BUSINESS_NAME={data['business_name']}
 ASSISTANT_NAME={data['assistant_name']}
-RABBITMQ_HOST=91.98.64.92
+RABBITMQ_HOST=rabbitmq_rabbitmq
 RABBITMQ_PORT=5672
 RABBITMQ_USER={SECRETS.get('RABBITMQ_USER', 'guest')}
 RABBITMQ_PASS={SECRETS.get('RABBITMQ_PASS', 'guest')}
 RABBITMQ_VHOST=default
-REDIS_HOST=91.98.64.92
-REDIS_PORT=6380
+REDIS_HOST=redis_redis
+REDIS_PORT=6379
 REDIS_PASSWORD={REDIS_PASSWORD}
 GEMINI_API_KEY={data['gemini_key']}
 UAZAPI_BASE_URL=https://strategicai.uazapi.com
@@ -501,13 +501,15 @@ def build_env_list(data: dict) -> list[dict]:
         {"name": "PROJECT_SLUG", "value": data["slug"]},
         {"name": "BUSINESS_NAME", "value": data["business_name"]},
         {"name": "ASSISTANT_NAME", "value": data["assistant_name"]},
-        {"name": "RABBITMQ_HOST", "value": "91.98.64.92"},
+        # Nomes de servico da rede overlay network_public — as portas publicas
+        # (5672/6380) estao fechadas no host desde o hardening de jun/2026.
+        {"name": "RABBITMQ_HOST", "value": "rabbitmq_rabbitmq"},
         {"name": "RABBITMQ_PORT", "value": "5672"},
         {"name": "RABBITMQ_USER", "value": SECRETS.get("RABBITMQ_USER", "guest")},
         {"name": "RABBITMQ_PASS", "value": SECRETS.get("RABBITMQ_PASS", "guest")},
         {"name": "RABBITMQ_VHOST", "value": "default"},
-        {"name": "REDIS_HOST", "value": "91.98.64.92"},
-        {"name": "REDIS_PORT", "value": "6380"},
+        {"name": "REDIS_HOST", "value": "redis_redis"},
+        {"name": "REDIS_PORT", "value": "6379"},
         {"name": "REDIS_PASSWORD", "value": REDIS_PASSWORD},
         {"name": "GEMINI_API_KEY", "value": data["gemini_key"]},
         {"name": "UAZAPI_BASE_URL", "value": "https://strategicai.uazapi.com"},

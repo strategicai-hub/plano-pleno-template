@@ -12,8 +12,9 @@ class Settings(BaseSettings):
     BUSINESS_NAME: str = "Empresa"
     ASSISTANT_NAME: str = "Assistente"
 
-    # RabbitMQ
-    RABBITMQ_HOST: str = "91.98.64.92"
+    # RabbitMQ (nome de servico na overlay network_public; a porta publica
+    # esta fechada no host desde o hardening de jun/2026)
+    RABBITMQ_HOST: str = "rabbitmq_rabbitmq"
     RABBITMQ_PORT: int = 5672
     RABBITMQ_USER: str = "guest"
     RABBITMQ_PASS: str = "guest"
@@ -21,8 +22,8 @@ class Settings(BaseSettings):
     RABBITMQ_QUEUE: str = ""
 
     # Redis
-    REDIS_HOST: str = "91.98.64.92"
-    REDIS_PORT: int = 6380
+    REDIS_HOST: str = "redis_redis"
+    REDIS_PORT: int = 6379
     REDIS_PASSWORD: str = ""
 
     # Google Gemini
