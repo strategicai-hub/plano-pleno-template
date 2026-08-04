@@ -22,6 +22,7 @@ from google.genai import types as gtypes
 from app.client_data import load_client_data
 from app.config import settings
 from app.prompt import get_system_prompt
+from app.services import imoveis
 from app.services.redis_service import get_chat_history, append_chat_history
 from app.services.sai_metrics import log_message_async
 
@@ -98,6 +99,21 @@ def _usage_tokens(response: Any) -> tuple[int, int, int]:
 
 async def chat(phone: str, user_message: str, lead_name: str = "") -> tuple[str, tuple[int, int, int]]:
     client = _get_client()
+
+    # Link de anuncio na mensagem -> le a ficha do imovel e injeta como
+    # contexto. Fica AQUI (e nao no consumer) porque `chat` e o funil unico de
+    # todas as entradas — WhatsApp, simulador e follow-ups. Falha nunca pode
+    # derrubar o atendimento: segue sem a ficha.
+    try:
+        bloco_imovel = await imoveis.build_context_block(user_message)
+    except Exception:
+        logger.exception("Erro ao montar contexto de imovel para %s", phone)
+        bloco_imovel = ""
+    if bloco_imovel:
+        # Vai para o historico junto com a mensagem: nos turnos seguintes o
+        # lead pergunta "e o condominio?" e a ficha ainda esta no contexto.
+        user_message = bloco_imovel + user_message
+
     history = await get_chat_history(phone)
     contents = _history_to_contents(history)
     contents.append(gtypes.Content(role="user", parts=[gtypes.Part.from_text(text=_temporal_prefix() + user_message)]))

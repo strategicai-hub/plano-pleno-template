@@ -4,6 +4,9 @@ aio-pika==9.5.4
 redis[hiredis]==5.2.1
 google-genai==1.20.0
 httpx==0.28.1
+# Leitura de link de anuncio (app/services/imoveis.py): imita o handshake TLS
+# do Chrome. Sem isso, Viva Real/ZAP/OLX devolvem 403 (Cloudflare).
+curl_cffi==0.16.0
 pydantic-settings==2.7.1
 gspread==6.1.4
 google-auth==2.38.0

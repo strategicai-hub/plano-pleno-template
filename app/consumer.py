@@ -17,6 +17,7 @@ from app import db
 from app.config import settings
 from app.images import MEDIA_DICT
 from app.services import calendar as calendar_facade
+from app.services import imoveis
 from app.services import redis_service as rds
 from app.services import uazapi
 from app.services.gemini import chat as gemini_chat, transcribe_audio, analyze_image, generate_summary, generate_handoff_summary
@@ -421,6 +422,17 @@ async def _run_ai_and_reply(phone: str, unified_msg: str, lead: dict, push_name:
 
     # F.1) "Digitando..." enquanto a IA pensa/responde.
     await uazapi.send_presence(phone, "composing")
+
+    # F.2) Log do painel: sinaliza que a mensagem trouxe link de anuncio. A
+    # LEITURA da ficha acontece dentro de gemini.chat() — funil unico de todas
+    # as entradas (WhatsApp, simulador, follow-ups). Aqui so detectamos a URL,
+    # sem request, para o evento aparecer no painel.
+    try:
+        urls_imovel = imoveis.find_property_urls(unified_msg)
+        if urls_imovel:
+            log(f"[TOOL IMOVEL] Link de anuncio detectado: {', '.join(urls_imovel)}")
+    except Exception as e:
+        log(_warn(f"[TOOL IMOVEL] Falha ao detectar link: {e}"))
 
     # G) Processamento com IA (com retry)
     log(f"[TOOL GEMINI] Executando chat(phone={phone}, msg_len={len(unified_msg)})")

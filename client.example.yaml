@@ -171,6 +171,15 @@ differentials:
 #   # locacao_avulsos); deriveRealestate() converte p/ model+transactions (contrato inalterado).
 #   mcmv: nao                        # sim_todos | alguns | nao (so p/ empreendimentos/ambos)
 #   broker_title: corretor          # corretor | corretora — define genero na apresentacao
+#   # Leitura de link de anuncio (app/services/imoveis.py). Portais suportados:
+#   # Auxiliadora Predial, Foxter, Viva Real, ZAP e OLX. Os dominios listados em
+#   # own_sites sao tratados como "da casa" — a ficha vira autoritativa e o bot
+#   # responde tudo sobre o imovel. Portal de terceiro entra so como perfil de
+#   # busca (o bot avisa que o anuncio nao e nosso e oferece a carteira propria).
+#   # ATENCAO: Viva Real, ZAP e OLX bloqueiam IP de datacenter (403). Em VPS so
+#   # Auxiliadora e Foxter respondem; os outros caem no aviso de "nao abriu".
+#   own_sites:
+#     - minhaimobiliaria.com.br
 # leadflow:
 #   direction: inbound              # inbound | outbound | ambos
 
