@@ -82,6 +82,11 @@ async def run() -> None:
 
     inactive_hours = int(cfg.get("inactive_hours", 24))
     max_stages = int(cfg.get("max_stages", 3))
+    # Teto de envios por execucao. Ao ligar a reativacao num bot com base
+    # acumulada, TODOS os leads inativos ficam devidos no mesmo ciclo — sem
+    # teto isso vira centenas de mensagens em minutos (risco de ban no
+    # WhatsApp). Com teto, o backlog escoa aos poucos. 0 = sem limite.
+    max_per_run = int(cfg.get("max_per_run", 20))
 
     now_tz = _now_tz()
     now_utc_iso = now_tz.astimezone(timezone.utc).isoformat()
@@ -92,7 +97,15 @@ async def run() -> None:
     if not due:
         return
 
-    logger.info("reactivation: %d lead(s) devido(s)", len(due))
+    total_due = len(due)
+    if max_per_run > 0 and total_due > max_per_run:
+        due = due[:max_per_run]
+        logger.info(
+            "reactivation: %d lead(s) devido(s), processando %d neste ciclo (teto max_per_run)",
+            total_due, max_per_run,
+        )
+    else:
+        logger.info("reactivation: %d lead(s) devido(s)", total_due)
 
     for lead in due:
         phone = lead["phone"]
@@ -157,4 +170,10 @@ async def run() -> None:
 
         await db.advance_followup_stage(phone, new_stage, next_iso, finalize)
         await rds.release_followup_lock(phone)
-        logger.info("[%s] stage %d -> %d (finalize=%s)", phone, stage, new_stage, finalize)
+        # Texto no log de proposito: a mensagem e gerada na hora e nao fica
+        # gravada em lugar nenhum — sem isso nao da para auditar o que o bot
+        # mandou em cada follow-up.
+        logger.info(
+            "[%s] ENVIADO stage=%d nome=%r texto=%r (proximo=%s finalize=%s)",
+            phone, stage, nome, msg, next_iso or "-", finalize,
+        )

@@ -161,8 +161,30 @@ async def get_lead(phone: str) -> Optional[dict]:
 
 
 async def touch_last_message(phone: str) -> None:
-    """Marca momento da última mensagem do cliente. Insumo para follow-up de reativação."""
+    """Marca momento da última mensagem do cliente. Insumo para follow-up de reativação.
+
+    O lead respondeu: a conversa reabriu. Zera o ciclo de reativação (estágio e
+    agendamento pendente) e tira o 'finalizado' — sem isso, quem já esgotou os
+    estágios (ou foi marcado como encerrado) nunca mais seria reativado ao voltar
+    a falar. 'agendado' é preservado: quem tem compromisso não é lead frio.
+    """
     await upsert_lead(phone, last_customer_message_at=_now_iso())
+    async with aiosqlite.connect(settings.SQLITE_PATH) as db:
+        await db.execute(
+            """
+            UPDATE leads
+               SET stage_follow_up = 0,
+                   next_follow_up = NULL,
+                   status_conversa = CASE
+                       WHEN COALESCE(status_conversa, '') = 'finalizado' THEN 'em_andamento'
+                       ELSE status_conversa
+                   END
+             WHERE phone = ?
+               AND COALESCE(status_conversa, '') != 'agendado'
+            """,
+            (phone,),
+        )
+        await db.commit()
 
 
 async def set_modo_mudo(phone: str, value: bool = True) -> None:

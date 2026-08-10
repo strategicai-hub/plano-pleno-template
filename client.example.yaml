@@ -221,6 +221,10 @@ followups:
     day_of_week: "mon-fri"       # apenas dias uteis
     cadence_minutes: 15          # frequencia do job (em minutos)
     hours: "9-18"                # janela horaria (cron `hour`) — evita disparo noturno
+    max_per_run: 20              # teto de envios por execucao (0 = sem limite).
+                                 # Ao ligar a reativacao num bot com base acumulada,
+                                 # todo o backlog fica devido no mesmo ciclo — o teto
+                                 # faz escoar aos poucos e evita ban no WhatsApp.
   appointment_reminder:
     enabled: true
     hours_before: 3              # envia lembrete X horas antes do agendamento
