@@ -39,18 +39,29 @@ _WEEK_TC = [
 ]
 
 
-def _temporal_prefix() -> str:
+def _temporal_prefix(lead_name: str = "") -> str:
     """Bloco de contexto temporal injetado na user_message a cada turno.
 
     O system_instruction também recebe a data, mas o modelo às vezes ignora —
     repetir no próprio turno do usuário força a leitura imediata.
+
+    `lead_name` é o nome que o próprio contato informou na conversa (nunca o
+    nome do perfil do WhatsApp). Vazio = ainda não informou.
     """
     now = datetime.now(_SP_TZ_TC)
     tomorrow = now + timedelta(days=1)
+    nome_confirmado = (lead_name or "").strip()
     return (
         f"[CONTEXTO DO SISTEMA — não responda sobre isto, apenas use como referência: "
         f"agora são {now.strftime('%H:%M')} de {_WEEK_TC[now.weekday()]}, {now.strftime('%d/%m/%Y')}. "
         f"Amanhã é {_WEEK_TC[tomorrow.weekday()]}, {tomorrow.strftime('%d/%m/%Y')}. "
+        f"NOME CONFIRMADO DO CONTATO: {nome_confirmado if nome_confirmado else '(vazio — ainda não informado)'}. "
+        f"Só existe UM nome válido: o que o próprio contato escreveu nesta conversa. "
+        f"PROIBIDO usar qualquer outro nome — nome do perfil/agenda do WhatsApp, nome que apareça em "
+        f"assinatura, encaminhamento, cadastro ou anexo NÃO valem. Se o contato disser que se chama "
+        f"outra coisa, o nome novo substitui o antigo imediatamente e o antigo nunca mais é usado. "
+        f"Quando o contato informar o nome, emita [NOME=PrimeiroNome] no fim da resposta. "
+        f"Se o campo acima estiver vazio, você NÃO sabe o nome dele — não invente e não chute. "
         f"REGRA DO NOME: NÃO comece sua resposta com o nome da pessoa e NÃO repita o nome dela. "
         f"Usar o nome em toda mensagem soa robotizado. O nome só pode aparecer DUAS vezes na conversa "
         f"inteira: uma ao recebê-lo (\"Prazer, {{nome}}\") e uma na confirmação do fechamento/agendamento. "
@@ -116,7 +127,12 @@ async def chat(phone: str, user_message: str, lead_name: str = "") -> tuple[str,
 
     history = await get_chat_history(phone)
     contents = _history_to_contents(history)
-    contents.append(gtypes.Content(role="user", parts=[gtypes.Part.from_text(text=_temporal_prefix() + user_message)]))
+    contents.append(
+        gtypes.Content(
+            role="user",
+            parts=[gtypes.Part.from_text(text=_temporal_prefix(lead_name) + user_message)],
+        )
+    )
 
     config = gtypes.GenerateContentConfig(
         system_instruction=get_system_prompt(),

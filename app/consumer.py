@@ -80,6 +80,25 @@ def _is_reset_confirmation(text: str) -> bool:
     return normalized == "conversa reiniciada"
 
 
+def _first_name(name: str) -> str:
+    return " ".join((name or "").strip().split()).split(" ")[0].title()
+
+
+def _extract_nome_flag(text: str) -> tuple[str, str]:
+    """Extrai a flag [NOME=...] emitida pela IA quando o lead informa o nome.
+
+    O nome do perfil do WhatsApp (push_name) NAO e fonte de verdade — pode ser
+    apelido, nome de outra pessoa ou o nome de quem cadastrou o chip. O unico
+    nome que o bot pode usar e o que o proprio lead informou na conversa, e ele
+    chega por esta flag.
+    """
+    match = re.search(r"\[NOME=([^\]]+)\]", text or "", flags=re.IGNORECASE)
+    cleaned = re.sub(r"\[NOME=[^\]]*\]", "", text or "", flags=re.IGNORECASE).strip()
+    if not match:
+        return cleaned, ""
+    return cleaned, _first_name(match.group(1))
+
+
 def log(line: str) -> None:
     logger.info(_strip_html(line))
     buf = _session_log_var.get(None)
@@ -335,19 +354,18 @@ async def _process_message(msg: dict) -> None:
     # Nota: o tique azul (mark_read) agora e disparado no webhook assim que a
     # mensagem chega — leitura instantanea, sem esperar o consumer/debounce.
 
-    # Cadastro de lead
+    # Cadastro de lead — IMPORTANTE: nao usar push_name como nome.
+    # O push_name e o nome do perfil do WhatsApp (pode ser apelido, nome do
+    # titular do chip ou de outra pessoa) e ja fez o bot chamar o lead pelo
+    # nome errado. O nome real so e persistido via flag [NOME=...] emitida
+    # pela IA quando o proprio lead informa o nome na conversa.
     lead = await rds.get_lead(phone)
     if not lead:
-        lead = await rds.create_lead(phone, push_name)
-
-    if push_name and lead.get("name", "") != push_name:
-        await rds.update_lead(phone, name=push_name)
+        lead = await rds.create_lead(phone)
 
     # PLENO: marca ultimo contato do lead no SQLite (insumo do reactivation job)
     try:
         await db.touch_last_message(phone)
-        if push_name:
-            await db.upsert_lead(phone, nome=push_name)
     except Exception as e:
         log(_warn(f"[{phone}] Falha ao atualizar last_customer_message_at: {e}"))
 
@@ -465,6 +483,17 @@ async def _run_ai_and_reply(phone: str, unified_msg: str, lead: dict, push_name:
         return
 
     # I) Parsing e envio
+    # Nome informado pelo lead na conversa: unica fonte de verdade do nome.
+    ai_response, nome_flag = _extract_nome_flag(ai_response)
+    if nome_flag and nome_flag != lead.get("name", ""):
+        await rds.update_lead(phone, name=nome_flag)
+        try:
+            await db.upsert_lead(phone, nome=nome_flag)
+        except Exception:
+            logger.debug("upsert_lead do nome falhou para %s", phone)
+        lead["name"] = nome_flag
+        log(_ok(f"[{phone}] Nome do lead salvo: {nome_flag}"))
+
     parts, finalizado, transferir, agendar, cancelar_agendamento = _parse_ai_response(ai_response)
     log(_ok(f"[TOOL GEMINI] Resultado: SUCESSO - {len(parts)} parte(s) gerada(s), finalizado={finalizado}, transferir={transferir}, agendar={agendar is not None}"))
     log(_ai(f"[{phone}] {ai_response[:400]}"))
