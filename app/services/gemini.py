@@ -45,8 +45,9 @@ def _temporal_prefix(lead_name: str = "") -> str:
     O system_instruction também recebe a data, mas o modelo às vezes ignora —
     repetir no próprio turno do usuário força a leitura imediata.
 
-    `lead_name` é o nome que o próprio contato informou na conversa (nunca o
-    nome do perfil do WhatsApp). Vazio = ainda não informou.
+    `lead_name` já vem resolvido por `nomes.nome_do_lead()`: é o nome que o
+    próprio contato forneceu (na conversa ou no cadastro que ele preencheu),
+    nunca o nome do perfil do WhatsApp. Vazio = não sabemos o nome dele.
     """
     now = datetime.now(_SP_TZ_TC)
     tomorrow = now + timedelta(days=1)
@@ -56,12 +57,15 @@ def _temporal_prefix(lead_name: str = "") -> str:
         f"agora são {now.strftime('%H:%M')} de {_WEEK_TC[now.weekday()]}, {now.strftime('%d/%m/%Y')}. "
         f"Amanhã é {_WEEK_TC[tomorrow.weekday()]}, {tomorrow.strftime('%d/%m/%Y')}. "
         f"NOME CONFIRMADO DO CONTATO: {nome_confirmado if nome_confirmado else '(vazio — ainda não informado)'}. "
-        f"Só existe UM nome válido: o que o próprio contato escreveu nesta conversa. "
-        f"PROIBIDO usar qualquer outro nome — nome do perfil/agenda do WhatsApp, nome que apareça em "
-        f"assinatura, encaminhamento, cadastro ou anexo NÃO valem. Se o contato disser que se chama "
-        f"outra coisa, o nome novo substitui o antigo imediatamente e o antigo nunca mais é usado. "
+        f"Esse campo acima é a ÚNICA fonte de nome que você pode usar. "
+        f"PROIBIDO chamar o contato por qualquer nome que não esteja nesse campo — em especial o nome "
+        f"do perfil/agenda do WhatsApp, e qualquer nome que apareça em assinatura, encaminhamento ou "
+        f"anexo. Esses nomes costumam ser de outra pessoa e chamar o contato assim é erro grave. "
+        f"Se o contato disser nesta conversa que se chama outra coisa, o nome novo substitui o antigo "
+        f"imediatamente e o antigo nunca mais é usado. "
         f"Quando o contato informar o nome, emita [NOME=PrimeiroNome] no fim da resposta. "
-        f"Se o campo acima estiver vazio, você NÃO sabe o nome dele — não invente e não chute. "
+        f"Se o campo acima estiver vazio, você NÃO sabe o nome dele — não invente, não chute e não use "
+        f"vocativo nenhum; se fizer sentido, pergunte uma única vez como pode chamá-lo. "
         f"REGRA DO NOME: NÃO comece sua resposta com o nome da pessoa e NÃO repita o nome dela. "
         f"Usar o nome em toda mensagem soa robotizado. O nome só pode aparecer DUAS vezes na conversa "
         f"inteira: uma ao recebê-lo (\"Prazer, {{nome}}\") e uma na confirmação do fechamento/agendamento. "
@@ -327,6 +331,10 @@ async def generate_reactivation_message(
 ) -> str:
     """PLENO: gera mensagem personalizada de reativacao a partir do historico do
     lead. `stage` 1..N controla o tom (primeiro contato x ultima chance).
+
+    `nome` DEVE vir de `nomes.nome_do_lead()` — nunca do campo cru do banco.
+    Este canal ja disparou "Oi Tutu" (nome do perfil do WhatsApp) porque lia o
+    nome direto do SQLite, sem a trava que o chat reativo tinha.
     """
     history = await get_chat_history(phone)
 
@@ -349,12 +357,28 @@ async def generate_reactivation_message(
         3: "ultima chamada, respeitoso, sem pressao",
     }.get(stage, "educado e direto")
 
+    # Trava de nome: o unico vocativo permitido e o `nome` recebido aqui. Sem
+    # isso o modelo pesca qualquer nome que apareca no trecho da conversa
+    # (assinatura, nome de terceiro citado, nome antigo ja corrigido).
+    if nome:
+        regra_nome = (
+            f"Chame o lead de {nome} — este e o unico nome permitido. "
+            "PROIBIDO usar qualquer outro nome que apareca no trecho da conversa abaixo."
+        )
+    else:
+        regra_nome = (
+            "Voce NAO sabe o nome deste lead. Escreva a mensagem SEM vocativo e SEM nome "
+            "(ex.: comece com 'Oi, tudo bem?'). PROIBIDO inventar um nome ou pescar um nome "
+            "do trecho da conversa abaixo."
+        )
+
     prompt = (
         f"Voce e {assistant_name or 'a assistente'} da {business_name or 'empresa'}.\n"
         f"Data/hora atual: {now_str or '-'}\n"
-        f"Nome do lead: {nome or '(desconhecido)'}\n"
+        f"Nome do lead: {nome or '(desconhecido — nao use nome)'}\n"
         f"Tom desta mensagem: {tone}\n"
         + (f"Referencia (nao copiar literalmente): {hint}\n" if hint else "")
+        + f"REGRA DO NOME (prioritaria): {regra_nome}\n"
         + "Regras: 1 paragrafo, no maximo 2 frases, SEM asteriscos/markdown, "
           "uma unica pergunta aberta no final convidando o lead a retomar a conversa. "
           "Nao se apresente (ele ja te conhece).\n\n"

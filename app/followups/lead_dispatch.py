@@ -29,7 +29,7 @@ from zoneinfo import ZoneInfo
 from app import db
 from app.client_data import load_client_data
 from app.config import settings
-from app.services import lead_intake, redis_service as rds, sai_sync, uazapi
+from app.services import lead_intake, nomes, redis_service as rds, sai_sync, uazapi
 from app.services.gemini import generate_first_contact_message
 
 logger = logging.getLogger("followup.lead_dispatch")
@@ -113,7 +113,7 @@ def _render_fallback(item: dict, cfg: dict, now_tz: datetime) -> str:
     templates = cfg.get("templates") or FALLBACK_TEMPLATES
     data = load_client_data() or {}
     assistente = ((data.get("assistant") or {}).get("name") or "seu atendente").strip()
-    nome = (item.get("nome") or "").strip().split(" ")[0].title() or "tudo bem"
+    nome = nomes.nome_para_vocativo(nome_cadastro=item.get("nome") or "") or "tudo bem"
     values = {
         "nome": nome,
         "saudacao": _saudacao(now_tz),
@@ -205,10 +205,13 @@ async def run() -> None:
 async def _dispatch_one(item: dict, cfg: dict, now_tz: datetime) -> None:
     phone = item["phone"]
     nome = (item.get("nome") or "").strip()
+    # Vocativo do 1o contato: so o nome do cadastro, e so se for nome de
+    # pessoa. Cadastro com lixo ("🖤❤️", "ZAP 2 tim") vira mensagem sem nome.
+    nome_vocativo = nomes.nome_para_vocativo(nome_cadastro=nome)
 
     msg = await generate_first_contact_message(
         phone,
-        nome,
+        nome_vocativo,
         observacao=item.get("observacao") or "",
     )
     if not msg:
@@ -256,7 +259,7 @@ async def _dispatch_one(item: dict, cfg: dict, now_tz: datetime) -> None:
     # Semeia nas duas variantes porque o JID da resposta pode vir sem o 9.
     contexto = (
         "[CONTEXTO DO SISTEMA: lead recebido de origem externa. "
-        f"Nome: {nome or '-'}. "
+        f"Nome preenchido por ele no cadastro: {nome_vocativo or '-'}. "
         f"Observacao do cadastro: {item.get('observacao') or '-'}. "
         "Voce iniciou o contato com a mensagem a seguir — quando o lead responder, "
         "continue a qualificacao a partir dela, sem se apresentar de novo.]"
@@ -265,11 +268,18 @@ async def _dispatch_one(item: dict, cfg: dict, now_tz: datetime) -> None:
         await rds.append_chat_history(v, "user", contexto)
         await rds.append_chat_history(v, "model", msg)
 
-    # Painel SAI / CRM Redis + SQLite
+    # Painel SAI / CRM Redis + SQLite.
+    # O nome vai para o campo de CADASTRO, nunca para o campo de nome
+    # confirmado — o contato ainda nao disse como quer ser chamado nesta
+    # conversa. Ver app/services/nomes.py.
     if not await rds.get_lead(phone):
-        await rds.create_lead(phone, nome)
-    await rds.update_lead(phone, name=nome, status_conversa="Primeiro contato enviado")
-    await db.upsert_lead(phone, nome=nome)
+        await rds.create_lead(phone)
+    await rds.update_lead(
+        phone,
+        name_cadastro=nome,
+        status_conversa="Primeiro contato enviado",
+    )
+    await db.upsert_lead(phone, nome_cadastro=nome)
 
     # Follow-up automatico se o lead nao responder: entra no ciclo da
     # reativacao (stages 1..max_stages, 1/dia). Cancelado pelo consumer se o

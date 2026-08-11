@@ -25,6 +25,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS leads (
   phone TEXT PRIMARY KEY,
   nome TEXT,
+  nome_cadastro TEXT,
   status TEXT,
   modo_mudo INTEGER DEFAULT 0,
   next_follow_up TEXT,
@@ -86,6 +87,11 @@ def _ensure_dir() -> None:
 # ja existe — engolimos o erro.
 _MIGRATIONS = [
     "ALTER TABLE lead_dispatch_queue ADD COLUMN external_id TEXT",
+    # `leads.nome` passa a guardar SO o nome que o contato informou na conversa.
+    # O nome que ele preencheu no cadastro de origem vive aqui, separado —
+    # misturar as duas origens no mesmo campo foi o que fez o push_name do
+    # WhatsApp virar vocativo (ver app/services/nomes.py).
+    "ALTER TABLE leads ADD COLUMN nome_cadastro TEXT",
 ]
 
 

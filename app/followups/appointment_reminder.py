@@ -18,7 +18,7 @@ from app import db
 from app.client_data import load_client_data
 from app.config import settings
 from app.followups import templates
-from app.services import redis_service as rds, uazapi
+from app.services import nomes, redis_service as rds, uazapi
 
 logger = logging.getLogger("followup.appointment_reminder")
 
@@ -89,9 +89,10 @@ async def run() -> None:
         if not await rds.acquire_followup_lock(phone, ttl=3600):
             logger.info("[%s] lembrete ja em andamento, pulando", phone)
             continue
-        # Pega nome do lead (SQLite)
+        # Nome do lead (SQLite) — sempre via nomes.nome_do_lead, nunca cru:
+        # o campo pode conter nome de perfil do WhatsApp de registro legado.
         lead = await db.get_lead(phone)
-        nome = (lead or {}).get("nome") or ""
+        nome = nomes.nome_do_lead(lead)
         # Formata horario no fuso do scheduler
         try:
             sched_dt = datetime.fromisoformat(appt["scheduled_at"])

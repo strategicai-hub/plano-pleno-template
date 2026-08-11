@@ -116,3 +116,24 @@ async def test_schedule_appointment_idempotente(temp_db):
 
     due = await db_mod.get_appointments_for_reminder(until_iso=until, now_iso=now.isoformat())
     assert len(due) == 1
+
+
+async def test_nome_e_nome_cadastro_sao_campos_separados(temp_db):
+    """As duas origens do nome nao podem compartilhar campo.
+
+    Misturar "nome informado na conversa" com "nome do cadastro" no mesmo
+    campo foi o que deixou o push_name do WhatsApp virar vocativo — o disparo
+    de 1o contato grava so `nome_cadastro`, e `nome` fica para a flag [NOME=].
+    """
+    from app.services import nomes
+
+    await db_mod.upsert_lead("5521992728866", nome_cadastro="MARCOS FERNANDO DE TURETTA")
+    lead = await db_mod.get_lead("5521992728866")
+    assert lead["nome_cadastro"] == "MARCOS FERNANDO DE TURETTA"
+    assert not lead["nome"]
+    assert nomes.nome_do_lead(lead) == "Marcos"
+
+    # O contato diz o nome dele na conversa: passa a valer sobre o cadastro.
+    await db_mod.upsert_lead("5521992728866", nome="Tuta")
+    lead = await db_mod.get_lead("5521992728866")
+    assert nomes.nome_do_lead(lead) == "Tuta"

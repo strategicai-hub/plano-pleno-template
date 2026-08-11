@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 from app import db
 from app.client_data import load_client_data
 from app.config import settings
-from app.services import redis_service as rds, uazapi
+from app.services import nomes, redis_service as rds, uazapi
 from app.services.gemini import generate_reactivation_message
 
 logger = logging.getLogger("followup.reactivation")
@@ -109,7 +109,11 @@ async def run() -> None:
 
     for lead in due:
         phone = lead["phone"]
-        nome = lead.get("nome") or ""
+        # Nunca ler `lead["nome"]` cru: a reativacao ja saiu chamando lead pelo
+        # nome do perfil do WhatsApp ("Oi Tutu"). nomes.nome_do_lead aplica a
+        # precedencia confirmado > cadastro e devolve "" quando nao ha nome
+        # confiavel — nesse caso a mensagem sai sem vocativo.
+        nome = nomes.nome_do_lead(lead)
         stage = int(lead.get("stage_follow_up") or 1)
 
         if stage > max_stages:

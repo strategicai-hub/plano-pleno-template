@@ -18,6 +18,7 @@ from app.config import settings
 from app.images import MEDIA_DICT
 from app.services import calendar as calendar_facade
 from app.services import imoveis
+from app.services import nomes
 from app.services import redis_service as rds
 from app.services import uazapi
 from app.services.gemini import chat as gemini_chat, transcribe_audio, analyze_image, generate_summary, generate_handoff_summary
@@ -80,10 +81,6 @@ def _is_reset_confirmation(text: str) -> bool:
     return normalized == "conversa reiniciada"
 
 
-def _first_name(name: str) -> str:
-    return " ".join((name or "").strip().split()).split(" ")[0].title()
-
-
 def _extract_nome_flag(text: str) -> tuple[str, str]:
     """Extrai a flag [NOME=...] emitida pela IA quando o lead informa o nome.
 
@@ -91,12 +88,20 @@ def _extract_nome_flag(text: str) -> tuple[str, str]:
     apelido, nome de outra pessoa ou o nome de quem cadastrou o chip. O unico
     nome que o bot pode usar e o que o proprio lead informou na conversa, e ele
     chega por esta flag.
+
+    A flag ainda passa pelo validador de nome de pessoa: se a IA emitir
+    [NOME=Mais] a partir de "mais gostei de saber", ou repetir o nome do perfil
+    que apareceu em algum lugar, o valor e descartado.
     """
     match = re.search(r"\[NOME=([^\]]+)\]", text or "", flags=re.IGNORECASE)
     cleaned = re.sub(r"\[NOME=[^\]]*\]", "", text or "", flags=re.IGNORECASE).strip()
     if not match:
         return cleaned, ""
-    return cleaned, _first_name(match.group(1))
+    candidato = match.group(1)
+    if not nomes.eh_nome_de_pessoa(candidato):
+        logger.info("Flag [NOME=%r] descartada — nao parece nome de pessoa", candidato)
+        return cleaned, ""
+    return cleaned, nomes.primeiro_nome(candidato)
 
 
 def log(line: str) -> None:
@@ -428,15 +433,19 @@ async def _process_message(msg: dict) -> None:
     await _run_ai_and_reply(phone, unified_msg, lead, push_name)
 
 
-async def _run_ai_and_reply(phone: str, unified_msg: str, lead: dict, push_name: str) -> None:
+async def _run_ai_and_reply(phone: str, unified_msg: str, lead: dict, rotulo_log: str) -> None:
     """Processa a mensagem unificada com a IA e responde via WhatsApp.
 
     Extraído de _process_message para ser reutilizável pela recuperação de
     buffers órfãos no startup (mensagens cujo debounce foi interrompido por
-    redeploy/restart do worker)."""
+    redeploy/restart do worker).
+
+    `rotulo_log` é APENAS rótulo de log (vem do push_name do WhatsApp, útil
+    para achar a conversa no painel). NÃO usar como nome do contato — o nome
+    usável sai de nomes.nome_do_lead(lead)."""
     if not unified_msg:
         return
-    log(_msg(f"[{phone} - {push_name}] {unified_msg[:300]}"))
+    log(_msg(f"[{phone} - {rotulo_log}] {unified_msg[:300]}"))
 
     # F.1) "Digitando..." enquanto a IA pensa/responde.
     await uazapi.send_presence(phone, "composing")
@@ -459,7 +468,7 @@ async def _run_ai_and_reply(phone: str, unified_msg: str, lead: dict, push_name:
     tokens = (0, 0, 0)
     for attempt in range(6):
         try:
-            ai_response, tokens = await gemini_chat(phone, unified_msg, lead.get("name", ""))
+            ai_response, tokens = await gemini_chat(phone, unified_msg, nomes.nome_do_lead(lead))
         except Exception as e:
             last_error = str(e)
             log(_err(f"[TOOL GEMINI] Tentativa {attempt + 1}/6: FALHA - {e}"))
@@ -528,7 +537,7 @@ async def _run_ai_and_reply(phone: str, unified_msg: str, lead: dict, push_name:
 
     # J.1) PLENO: cria agendamento quando a IA emitiu [AGENDAR=...]
     if agendar is not None:
-        await _handle_agendar(phone, lead.get("name", ""), agendar)
+        await _handle_agendar(phone, nomes.nome_do_lead(lead), agendar)
 
     # J.2) PLENO: cancela ultimo agendamento ativo quando a IA emitiu [CANCELAR_AGENDAMENTO]
     if cancelar_agendamento:
@@ -542,7 +551,7 @@ async def _run_ai_and_reply(phone: str, unified_msg: str, lead: dict, push_name:
         await db.mark_finalizado(phone)
         log(_ok(f"[{phone}] Conversa marcada como finalizada"))
 
-    await _update_summary_and_sheets(phone, lead.get("name", ""), run_summary=finalizado or transferir)
+    await _update_summary_and_sheets(phone, nomes.nome_do_lead(lead), run_summary=finalizado or transferir)
 
     _save_session_log(phone)
 
@@ -560,7 +569,7 @@ async def _maybe_send_alert(phone: str, lead: dict, user_msg: str) -> None:
         log(f"[TOOL ALERTA_EQUIPE] Ignorado - alerta ja enviado recentemente para {phone}")
         return
 
-    contact = (lead.get("name") or "").strip() or "(nome nao informado)"
+    contact = nomes.nome_do_lead(lead) or "(nome nao informado)"
     log(f"[TOOL ALERTA_EQUIPE] Executando(phone={phone}, lead={contact})")
 
     # Briefing por IA: resumo da qualificacao + motivo do atendimento humano.
@@ -707,7 +716,7 @@ async def _update_summary_and_sheets(phone: str, name: str, run_summary: bool = 
         lead = await rds.get_lead(phone)
         sheets_service.upsert_lead(
             phone=phone,
-            name=lead.get("name", name) if lead else name,
+            name=nomes.nome_do_lead(lead) or name,
             resumo=resumo,
         )
         log(_ok(f"[TOOL SHEETS] Resultado: SUCESSO - lead atualizado na planilha"))
@@ -737,10 +746,9 @@ async def _recover_orphan_buffers() -> None:
             if not messages:
                 continue
             lead = await rds.get_lead(phone) or {"phone": phone, "name": ""}
-            push_name = lead.get("name", "")
             _begin_session_log()
             log(_warn(f"[{phone}] Recuperando buffer órfão pós-restart ({len(messages)} msg)"))
-            await _run_ai_and_reply(phone, "\n".join(messages), lead, push_name)
+            await _run_ai_and_reply(phone, "\n".join(messages), lead, nomes.nome_do_lead(lead))
         except Exception:
             logger.exception("Erro ao recuperar buffer órfão de %s", phone)
 
