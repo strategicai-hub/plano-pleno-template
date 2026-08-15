@@ -22,7 +22,7 @@ from apscheduler.triggers.cron import CronTrigger
 from app.client_data import load_client_data
 from app.config import settings
 from app.db import init_db_sync
-from app.followups import appointment_reminder, lead_dispatch, reactivation
+from app.followups import appointment_reminder, connection_watch, lead_dispatch, reactivation
 
 logging.basicConfig(
     level=logging.INFO,
@@ -94,6 +94,19 @@ async def main() -> None:
             ld_cfg.get("spacing_minutes_min", 3), ld_cfg.get("spacing_minutes_max", 8),
             ld_cfg.get("daily_cap", 60),
         )
+
+    # Vigia de conexao: independe de client.yaml e roda 24/7 de proposito — o
+    # WhatsApp cai a qualquer hora e a queda so e detectavel por polling.
+    if settings.CONNECTION_WATCH_ENABLED:
+        watch_min = max(int(settings.CONNECTION_WATCH_MINUTES), 1)
+        scheduler.add_job(
+            connection_watch.run,
+            CronTrigger(minute=f"*/{watch_min}" if watch_min > 1 else "*", timezone=tz),
+            id="connection_watch",
+            max_instances=1,
+            coalesce=True,
+        )
+        logger.info("job connection_watch: cadencia %d min", watch_min)
 
     if not scheduler.get_jobs():
         logger.warning("Nenhum job habilitado em client.yaml > followups. Scheduler ocioso.")

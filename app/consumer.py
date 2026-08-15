@@ -20,6 +20,7 @@ from app.services import calendar as calendar_facade
 from app.services import imoveis
 from app.services import nomes
 from app.services import redis_service as rds
+from app.services import telegram
 from app.services import uazapi
 from app.services.gemini import chat as gemini_chat, transcribe_audio, analyze_image, generate_summary, generate_handoff_summary
 from app.services.rabbitmq import consume
@@ -528,8 +529,17 @@ async def _run_ai_and_reply(phone: str, unified_msg: str, lead: dict, rotulo_log
             elif part["type"] == "video":
                 await uazapi.send_video(phone, part["content"])
         except Exception as e:
-            log(_err(f"[TOOL WHATSAPP] Resultado: FALHA ao enviar {part['type']} ({i+1}/{len(parts)}) - {e}"))
+            # uazapi ja tentou reenviar (backoff 2s/5s/12s). Se chegou aqui, o
+            # canal esta fora mesmo. Seguir para os baloes seguintes entregaria
+            # a resposta picada e fora de ordem — melhor parar e avisar a equipe.
+            faltando = len(parts) - i
+            log(_err(
+                f"[TOOL WHATSAPP] Resultado: FALHA ao enviar {part['type']} ({i+1}/{len(parts)}) - {e}. "
+                f"Abortando o restante da resposta ({faltando} parte(s) nao entregue(s))."
+            ))
             logger.exception("Erro ao enviar %s para %s", part["type"], phone)
+            await _alert_delivery_failure(phone, lead, i + 1, len(parts), parts, e)
+            break
 
     # J) Alerta de atendimento humano
     if transferir:
@@ -554,6 +564,45 @@ async def _run_ai_and_reply(phone: str, unified_msg: str, lead: dict, rotulo_log
     await _update_summary_and_sheets(phone, nomes.nome_do_lead(lead), run_summary=finalizado or transferir)
 
     _save_session_log(phone)
+
+
+async def _alert_delivery_failure(
+    phone: str,
+    lead: dict,
+    parte: int,
+    total: int,
+    parts: list,
+    erro: Exception,
+) -> None:
+    """Avisa a equipe que um lead ficou sem resposta por falha de entrega.
+
+    Vai por Telegram (canal independente — funciona mesmo com o WhatsApp fora)
+    e tambem por WhatsApp, que so chega em falha parcial. O log em ERROR vem
+    primeiro para o caso de nenhum dos dois canais estar configurado.
+    """
+    contact = (lead.get("name") or "").strip() or "(nome nao informado)"
+    nao_entregue = " | ".join(
+        str(p.get("content", ""))[:160] for p in parts[parte - 1:] if p.get("type") == "text"
+    )
+    logger.error(
+        "ENTREGA FALHOU: lead %s (%s) recebeu %d de %d parte(s). Nao entregue: %s",
+        phone, contact, parte - 1, total, nao_entregue[:500],
+    )
+    alert_text = (
+        "\u26a0\ufe0f RESPOSTA NAO ENTREGUE\n"
+        f"Lead: {contact}\n"
+        f"WhatsApp: {phone}\n"
+        f"Entregue: {parte - 1} de {total} mensagem(ns)\n"
+        f"Erro: {str(erro)[:180]}\n\n"
+        "O lead ficou sem resposta completa — assumir a conversa manualmente."
+    )
+    await telegram.send_alert(alert_text)
+    if not settings.ALERT_PHONE:
+        return
+    try:
+        await uazapi.send_text(settings.ALERT_PHONE, alert_text)
+    except Exception as alert_error:  # noqa: BLE001
+        logger.warning("Nao foi possivel avisar a equipe por WhatsApp: %s", alert_error)
 
 
 async def _maybe_send_alert(phone: str, lead: dict, user_msg: str) -> None:

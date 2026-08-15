@@ -1,3 +1,4 @@
+import asyncio
 import json as _json
 import logging
 
@@ -29,6 +30,48 @@ def _json_body(payload: dict) -> bytes:
     """Serializa payload preservando UTF-8 (ç, á, é etc.) sem escape unicode."""
     return _json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
+# Backoff dos reenvios. Motivo: em 14/08/2026 a instancia caiu ("logged out from
+# another device") entre o balao 1 e o 2 de uma resposta de 4 partes — a UAZAPI
+# passou a devolver 503 e o lead ficou so com o cumprimento, sem a pergunta. Sem
+# retry, qualquer indisponibilidade de segundos vira lead abandonado.
+_RETRY_DELAYS = (2, 5, 12)
+
+
+def _is_transient(exc: Exception) -> bool:
+    """So repete o que tem chance real de dar certo na proxima tentativa.
+
+    5xx = servidor UAZAPI/WhatsApp instavel ou instancia reconectando.
+    Timeout/erro de conexao = rede. 4xx (numero invalido, token errado) nunca
+    melhora com repeticao — falha na hora para o alerta subir rapido.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500
+    return isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
+
+
+async def _post_with_retry(url: str, payload: dict, what: str, number: str) -> "httpx.Response":
+    """POST na UAZAPI com reenvio automatico em falha transitoria."""
+    client = _get_client()
+    last: Exception | None = None
+    for attempt in range(len(_RETRY_DELAYS) + 1):
+        try:
+            resp = await client.post(url, content=_json_body(payload), headers=_headers())
+            resp.raise_for_status()
+            if attempt:
+                logger.info("%s para %s enviado na tentativa %d", what, number, attempt + 1)
+            return resp
+        except Exception as exc:  # noqa: BLE001 - reclassificado logo abaixo
+            last = exc
+            if attempt >= len(_RETRY_DELAYS) or not _is_transient(exc):
+                break
+            delay = _RETRY_DELAYS[attempt]
+            logger.warning(
+                "Falha ao enviar %s para %s (tentativa %d/%d): %s — retentando em %ds",
+                what, number, attempt + 1, len(_RETRY_DELAYS) + 1, exc, delay,
+            )
+            await asyncio.sleep(delay)
+    raise last  # type: ignore[misc]
+
 
 # Toda mensagem enviada pelo bot vai marcada com este track_source. O webhook
 # filtra `track_source in ("n8n", "IA")` (fromMe), entao os ecos do proprio bot
@@ -55,9 +98,7 @@ async def send_text(number: str, text: str, delay: int = 4000) -> dict:
     url = f"{settings.UAZAPI_BASE_URL}/send/text"
     payload = {"number": number, "text": text, "delay": delay, "track_source": TRACK_SOURCE}
     await rds.mark_outbound_echo(number, text)
-    client = _get_client()
-    resp = await client.post(url, content=_json_body(payload), headers=_headers())
-    resp.raise_for_status()
+    resp = await _post_with_retry(url, payload, "texto", number)
     data = resp.json()
     await _remember_outbound(data)
     logger.info("Texto enviado para %s", number)
@@ -117,9 +158,7 @@ async def _send_media(number: str, media_type: str, file_url: str, delay: int = 
         "delay": delay,
         "track_source": TRACK_SOURCE,
     }
-    client = _get_client()
-    resp = await client.post(url, content=_json_body(payload), headers=_headers())
-    resp.raise_for_status()
+    resp = await _post_with_retry(url, payload, media_type, number)
     data = resp.json()
     await _remember_outbound(data)
     logger.info("%s enviado para %s", media_type, number)
@@ -137,6 +176,20 @@ async def send_document(number: str, document_url: str, filename: str = "arquivo
 async def send_video(number: str, video_url: str, caption: str = "") -> dict:
     return await _send_media(number, "video", video_url)
 
+
+async def get_instance_status() -> dict:
+    """Estado da instancia WhatsApp (connected / disconnected / connecting).
+
+    Usado pelo vigia de conexao. Quando o aparelho e deslogado ("logged out from
+    another device"), /send/text passa a responder 503 e o bot fica mudo sem que
+    ninguem perceba — este endpoint e a unica forma de detectar isso sozinho.
+    """
+    url = f"{settings.UAZAPI_BASE_URL}/instance/status"
+    client = _get_client()
+    resp = await client.get(url, headers=_headers())
+    resp.raise_for_status()
+    data = resp.json() or {}
+    return data.get("instance") or data
 
 async def download_media(media_url: str) -> bytes:
     client = _get_client()

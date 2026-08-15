@@ -74,6 +74,17 @@ class Settings(BaseSettings):
     # do mesmo lead enquanto a equipe ainda processa o primeiro.
     ALERT_COOLDOWN_SECONDS: int = 1800
 
+    # Alertas por Telegram (app/services/telegram.py). Canal independente do
+    # WhatsApp — o unico que funciona quando a propria instancia UAZAPI esta
+    # fora. Mesmo bot que notifica chamados abertos no SAI Comercial.
+    TELEGRAM_BOT_TOKEN: str = ""
+    TELEGRAM_CHAT_ID: str = ""
+
+    # Vigia de conexao do WhatsApp (app/followups/connection_watch.py).
+    CONNECTION_WATCH_ENABLED: bool = True
+    CONNECTION_WATCH_MINUTES: int = 5
+    CONNECTION_ALERT_COOLDOWN_SECONDS: int = 1800
+
     # Numeros que ignoram debounce (comma-separated, ex: "5511999990000,5511888880000")
     DEBOUNCE_BYPASS_PHONES: str = ""
 
