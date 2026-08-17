@@ -30,7 +30,15 @@ def _block_ttl_seconds() -> int:
 
 async def set_block(phone: str, ttl: int | None = None, reason: str = "human") -> None:
     r = await get_redis()
-    await r.set(keys.block_key(phone), reason or "human", ex=ttl or _block_ttl_seconds())
+    key = keys.block_key(phone)
+    # Nunca rebaixa um bloqueio PERMANENTE (botao "Desativar assistente" no SAI,
+    # gravado sem TTL) para um bloqueio com prazo. Sem esta guarda, o eco de uma
+    # mensagem enviada pela atendente caia aqui e trocava o bloqueio permanente
+    # por um que expira amanha 08:00 — o bot voltava a responder no dia seguinte
+    # sem ninguem ter reativado o assistente.
+    if await r.ttl(key) == -1:  # -1 = existe e nao expira; -2 = nao existe
+        return
+    await r.set(key, reason or "human", ex=ttl or _block_ttl_seconds())
 
 
 async def set_permanent_block(phone: str, reason: str = "manual") -> None:
