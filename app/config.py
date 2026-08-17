@@ -81,7 +81,9 @@ class Settings(BaseSettings):
     TELEGRAM_CHAT_ID: str = ""
 
     # Vigia de conexao do WhatsApp (app/followups/connection_watch.py).
-    CONNECTION_WATCH_ENABLED: bool = True
+    # Desligado em 17/08/2026 a pedido do usuario: os alertas de instancia fora
+    # do ar nao eram uteis na pratica. Para religar, defina CONNECTION_WATCH_ENABLED=true.
+    CONNECTION_WATCH_ENABLED: bool = False
     CONNECTION_WATCH_MINUTES: int = 5
     CONNECTION_ALERT_COOLDOWN_SECONDS: int = 1800
 
