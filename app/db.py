@@ -13,7 +13,7 @@ import logging
 import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Iterable, Optional
 
 import aiosqlite
 
@@ -200,6 +200,35 @@ async def set_modo_mudo(phone: str, value: bool = True) -> None:
 async def is_modo_mudo(phone: str) -> bool:
     lead = await get_lead(phone)
     return bool(lead and lead.get("modo_mudo"))
+
+
+async def mute_followups(phones: Iterable[str], primary: str) -> None:
+    """
+    Corta o follow-up em DEFINITIVO para o lead (atendente humana assumiu).
+
+    Diferente do bloqueio no Redis — que expira amanha 08:00 e so adia a
+    reativacao —, `modo_mudo=1` e permanente: as duas consultas do follow-up
+    (`get_followups_due` e o `_seed_inactive_leads` da reativacao) exigem
+    `modo_mudo = 0`, entao o lead nunca mais e semeado nem cobrado.
+
+    Zera tambem `next_follow_up`/`stage_follow_up` para nao deixar agendamento
+    orfao no banco: o `modo_mudo` sozinho ja barraria o envio, mas a linha
+    pendente reapareceria se a flag fosse limpa manualmente algum dia.
+
+    Aplica nas duas variantes do numero (com/sem o 9o digito) porque o
+    follow-up pode ter sido agendado sob a outra forma — mas nunca cria linha
+    para variante que ainda nao existe. Desfeito so pelo /reset do lead, que
+    apaga a linha inteira.
+    """
+    for variant in phones:
+        if variant != primary and not await get_lead(variant):
+            continue
+        await upsert_lead(
+            variant,
+            modo_mudo=1,
+            next_follow_up=None,
+            stage_follow_up=0,
+        )
 
 
 async def schedule_followup(phone: str, next_follow_up_iso: str, stage: int = 1) -> None:

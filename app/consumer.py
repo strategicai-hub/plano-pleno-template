@@ -18,6 +18,7 @@ from app.config import settings
 from app.images import MEDIA_DICT
 from app.services import calendar as calendar_facade
 from app.services import imoveis
+from app.services import lead_intake
 from app.services import nomes
 from app.services import redis_service as rds
 from app.services import telegram
@@ -281,6 +282,10 @@ async def _process_message(msg: dict) -> None:
 
     if from_me:
         await rds.set_block(phone)
+        # Atendente humana assumiu -> follow-up desligado em DEFINITIVO para
+        # este lead. O set_block acima so adia (expira amanha 08:00); sem este
+        # corte o bot voltaria a cobrar quem ja esta sendo atendido na mao.
+        await db.mute_followups(lead_intake.phone_variants(phone), phone)
         # Origem: painel SAI envia via API (wasSentByApi=true); WhatsApp do
         # celular/Web nao seta a flag.
         raw = msg.get("raw_message") or {}

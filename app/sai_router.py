@@ -5,6 +5,7 @@ import re
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
 
+from app import db
 from app.config import settings
 from app.services import redis_service, lead_intake, sai_sync
 from app.client_data import load_client_data
@@ -195,6 +196,11 @@ async def push_history(
 
     role = "model" if body.role == "attendant" else "user"
     await redis_service.append_chat_history(phone, role, content)
+    # Mesma regra do eco fromMe: falou a humana, o lead sai do follow-up para
+    # sempre. Cobre o caso em que a mensagem dela nao gera eco fromMe e so
+    # chega por aqui (API Oficial Meta / IA pausada no painel).
+    if body.role == "attendant":
+        await db.mute_followups(lead_intake.phone_variants(phone), phone)
     logger.info("sai_router: /history registrou %s (%d chars) para %s", body.role, len(content), phone)
     return {"ok": True, "phone": phone, "role": body.role}
 

@@ -55,6 +55,58 @@ async def test_get_followups_due_respects_status_and_modo_mudo(temp_db):
     assert "5511000000004" not in phones  # finalizado
 
 
+async def test_mute_followups_corta_em_definitivo(temp_db):
+    """Atendente humana falou -> lead sai do follow-up e nao volta mesmo que
+    um novo agendamento seja gravado depois."""
+    now = datetime.now(timezone.utc)
+    past = (now - timedelta(hours=1)).isoformat()
+    phone = "5521999998888"
+
+    await db_mod.schedule_followup(phone, next_follow_up_iso=past, stage=2)
+    await db_mod.mute_followups([phone], phone)
+
+    lead = await db_mod.get_lead(phone)
+    assert lead["modo_mudo"] == 1
+    assert lead["next_follow_up"] is None
+    assert lead["stage_follow_up"] == 0
+
+    due = await db_mod.get_followups_due(now.isoformat())
+    assert phone not in {r["phone"] for r in due}
+
+    # Reagendar depois nao ressuscita o follow-up — o corte e permanente.
+    await db_mod.schedule_followup(phone, next_follow_up_iso=past, stage=1)
+    due_again = await db_mod.get_followups_due(now.isoformat())
+    assert phone not in {r["phone"] for r in due_again}
+
+
+async def test_mute_followups_nao_cria_linha_para_variante_inexistente(temp_db):
+    """A variante sem o 9o digito so e marcada se ja existir no banco —
+    senao o banco encheria de linhas fantasma a cada mensagem da atendente."""
+    primary = "5521999998888"
+    variante = "552199998888"
+
+    await db_mod.mute_followups([primary, variante], primary)
+
+    assert await db_mod.get_lead(primary) is not None
+    assert await db_mod.get_lead(variante) is None
+
+
+async def test_mute_followups_marca_variante_existente(temp_db):
+    """Se o follow-up foi agendado sob a outra forma do numero, ela tambem
+    precisa ser cortada — senao a reativacao continuaria pegando o lead."""
+    now = datetime.now(timezone.utc)
+    past = (now - timedelta(hours=1)).isoformat()
+    primary = "5521999998888"
+    variante = "552199998888"
+
+    await db_mod.schedule_followup(variante, next_follow_up_iso=past, stage=1)
+    await db_mod.mute_followups([primary, variante], primary)
+
+    assert (await db_mod.get_lead(variante))["modo_mudo"] == 1
+    due = await db_mod.get_followups_due(now.isoformat())
+    assert due == []
+
+
 async def test_advance_followup_stage_finalizes(temp_db):
     now = datetime.now(timezone.utc).isoformat()
     await db_mod.schedule_followup("5511000000005", next_follow_up_iso=now, stage=3)
