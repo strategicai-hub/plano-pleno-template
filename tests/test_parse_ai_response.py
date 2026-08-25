@@ -1,6 +1,7 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from app import consumer
 from app.consumer import _parse_ai_response
 
 _SP = ZoneInfo("America/Sao_Paulo")
@@ -111,6 +112,66 @@ def test_agendar_invalid_iso_is_ignored():
         "Tentando [AGENDAR=nao-eh-data|Algo]"
     )
     assert agendar is None
+
+
+# --- REGRESSAO: vazamento de marcador no WhatsApp (25/08/2026) ---
+# Um cliente derivado deste template entregou "[ORIGEM=]" e "[IMAGEM_FOTOS_1]"
+# a um lead real. A auditoria do template achou tres buracos que continuavam
+# abertos aqui, cobertos pelos testes abaixo.
+
+def _all_text(parts):
+    return " ".join(p["content"] for p in parts if p["type"] == "text")
+
+
+def test_resposta_so_com_marcador_nao_cai_no_fallback():
+    """O fallback `parts = [texto cru]` mandava a resposta inteira ao lead.
+
+    Quando todo o conteudo era marcador, cada balao ficava vazio, a lista saia
+    vazia e o fallback devolvia o texto ORIGINAL — com os marcadores.
+    """
+    parts, *_ = _parse_ai_response("[FLAG_X=1]")
+    assert parts == []
+
+
+def test_flag_vazia_nunca_vaza():
+    for flag in ("[FINALIZADO=]", "[TRANSFERIR=]", "[AGENDAR=]", "[NOME=]"):
+        parts, *_ = _parse_ai_response(f"Bom dia! {flag}")
+        assert _all_text(parts) == "Bom dia!", f"{flag} vazou"
+
+
+def test_eco_do_contexto_do_sistema_nao_vaza():
+    """O bloco injetado a cada turno tem espacos e acento — escapava do scrub."""
+    parts, *_ = _parse_ai_response(
+        "[CONTEXTO DO SISTEMA — não responda sobre isto: agora são 14:16]\n\nBom dia!"
+    )
+    assert _all_text(parts) == "Bom dia!"
+
+
+def test_texto_colado_na_tag_de_midia_e_preservado(monkeypatch):
+    """Antes, o texto no mesmo balao da tag era descartado junto com ela."""
+    monkeypatch.setitem(consumer.MEDIA_DICT, "[FOTO_1]", {"url": "https://x/1.jpg", "type": "image"})
+    parts, *_ = _parse_ai_response("Olha só o studio: [FOTO_1] bonito, né?")
+    assert [p["type"] for p in parts] == ["text", "image", "text"]
+    assert parts[0]["content"] == "Olha só o studio:"
+    assert parts[2]["content"] == "bonito, né?"
+
+
+def test_varias_tags_no_mesmo_bloco_viram_varias_midias(monkeypatch):
+    """Antes so a primeira tag do bloco virava envio; as outras sumiam."""
+    monkeypatch.setitem(consumer.MEDIA_DICT, "[FOTO_1]", {"url": "https://x/1.jpg", "type": "image"})
+    monkeypatch.setitem(consumer.MEDIA_DICT, "[FOTO_2]", {"url": "https://x/2.jpg", "type": "image"})
+    parts, *_ = _parse_ai_response("[FOTO_1] [FOTO_2]")
+    assert [p["content"] for p in parts] == ["https://x/1.jpg", "https://x/2.jpg"]
+
+
+def test_tag_de_midia_com_digito_e_reconhecida(monkeypatch):
+    """Cliente numera as proprias tags; `[A-Z_]+` nao casava nenhuma delas."""
+    monkeypatch.setitem(
+        consumer.MEDIA_DICT, "[IMAGEM_FOTOS_1]", {"url": "https://x/f1.jpg", "type": "image"}
+    )
+    parts, *_ = _parse_ai_response("Conheça o espaço:\n\n[IMAGEM_FOTOS_1]\n\nQuer visitar?")
+    assert [p["type"] for p in parts] == ["text", "image", "text"]
+    assert "[IMAGEM" not in _all_text(parts)
 
 
 def test_no_agendar_returns_none():

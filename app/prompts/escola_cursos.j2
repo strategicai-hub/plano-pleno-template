@@ -252,3 +252,6 @@ Após a resposta, emita `[FINALIZADO=1] [TRANSFERIR=1]` e avise que a equipe ent
 - `[TRANSFERIR=1]` — quando você acabou de avisar que vai repassar o atendimento para a equipe humana (Protocolo para Alunos, Fluxo de Visita, Regra de Ouro, Reforço Escolar). Fora desses casos, use `[TRANSFERIR=0]`.
 
 As flags não aparecem para o lead — o sistema as remove antes do envio. Elas controlam transferência de atendimento e bloqueio do agente.
+
+REGRA ABSOLUTA — FLAG NUNCA VAI VAZIA:
+Toda flag precisa de um valor preenchido. Se você ainda não tem a informação, OMITA a flag inteira — nunca escreva `[NOME=]`, `[AGENDAR=]` ou qualquer flag sem valor. Escreva-as SEMPRE na última linha da mensagem, no formato exato acima. Nunca comente sobre elas, nunca as explique e nunca as coloque no meio de uma frase.

@@ -6,6 +6,7 @@ import httpx
 
 from app.config import settings
 from app.services import redis_service as rds
+from app.text_guard import strip_control_markers
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,14 @@ async def _remember_outbound(resp_json: dict) -> None:
 
 
 async def send_text(number: str, text: str, delay: int = 4000) -> dict:
+    # Ultima barreira antes do WhatsApp: nenhum marcador de controle da IA
+    # ([TRANSFERIR=1], [NOME=], [FOTO_1]) pode chegar ao lead. O parser do
+    # consumer ja limpa, mas reativacao, lembrete e qualquer caminho futuro de
+    # envio passam por aqui — a checagem fica no ponto por onde todos passam.
+    text = strip_control_markers(text)
+    if not text:
+        logger.warning("Texto vazio apos limpeza de marcadores para %s - envio cancelado", number)
+        return {}
     url = f"{settings.UAZAPI_BASE_URL}/send/text"
     payload = {"number": number, "text": text, "delay": delay, "track_source": TRACK_SOURCE}
     await rds.mark_outbound_echo(number, text)

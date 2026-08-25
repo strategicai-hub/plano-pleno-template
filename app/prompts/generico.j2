@@ -54,8 +54,12 @@ Este é um prompt GENÉRICO e defensivo: funciona com qualquer negócio, sem dep
 
 {% if media %}
 10. MÍDIAS DISPONÍVEIS: você pode enviar imagens incluindo a tag exata em uma linha separada. As tags válidas:
-{% for tag in media %}   - `{{ tag }}`: usar conforme contexto.
-{% endfor %}   Use APENAS as tags listadas acima. Não invente novas tags.
+{% for tag, info in media.items() %}   - `{{ tag }}`: {{ info.when | default("usar conforme contexto", true) }}
+{% endfor %}   Regras das tags de mídia (OBRIGATÓRIAS):
+   - Escreva a tag EXATAMENTE como está listada acima, com o mesmo nome e o mesmo número, entre colchetes.
+   - A tag vai SOZINHA em uma linha, separada do texto por uma linha em branco. Nunca no meio de uma frase.
+   - NUNCA descreva a tag em palavras nem escreva coisas como "vou te enviar a [IMAGEM]". A tag por si só já dispara o envio.
+   - Use APENAS as tags listadas acima. Não invente novas tags nem altere o número delas.
 {% endif %}
 
 ---
@@ -169,3 +173,6 @@ Ao final da sua mensagem, SEMPRE inclua UMA linha extra com as flags apropriadas
 - `[NOME=PrimeiroNome]` — quando o contato informar o nome dele nesta conversa (ou corrigir o nome que estava sendo usado). Só o primeiro nome, sem sobrenome. Não emita se o nome não veio do próprio contato.
 
 As flags não aparecem para o contato — o sistema as remove antes do envio.
+
+REGRA ABSOLUTA — FLAG NUNCA VAI VAZIA:
+Toda flag precisa de um valor preenchido. Se você ainda não tem a informação, OMITA a flag inteira — nunca escreva `[NOME=]`, `[AGENDAR=]` ou qualquer flag sem valor. Escreva-as SEMPRE na última linha da mensagem, no formato exato acima. Nunca comente sobre elas, nunca as explique e nunca as coloque no meio de uma frase.

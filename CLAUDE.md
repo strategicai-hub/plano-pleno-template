@@ -63,6 +63,29 @@ Checklist: confirmar que o slug e o mesmo do deploy, que o webhook do bot nao te
 - Histórico Redis: `ltrim(-10, -1)` (10 mensagens)
 - `generate_summary` só em finalização/transferência (nunca a cada turno)
 
+## Regra inviolável: marcador de controle NUNCA chega ao lead
+
+O prompt manda a IA emitir marcadores (`[TRANSFERIR=1]`, `[NOME=Aline]`, `[AGENDAR=...]`, tags de mídia). Eles são instruções internas — o lead **não pode ver nenhum deles**. Em 25/08/2026 um cliente derivado entregou `[ORIGEM=]` e `[IMAGEM_FOTOS_1]` a um lead real e o usuário classificou como falha grave: *"proibido vazar código, isso não pode mais acontecer"*.
+
+A proteção é em **duas camadas** — não remova nenhuma delas:
+
+1. `_parse_ai_response` (`app/consumer.py`) — trata cada marcador conhecido via `_extract_flag()` e converte tag de mídia em envio real via `_split_media_parts()`; no fim, passa cada balão de texto por `strip_control_markers()`.
+2. `uazapi.send_text` — repete o strip no ponto por onde **todo** envio passa (chat, reativação, lembrete), e cancela o envio se o texto ficar vazio.
+
+Armadilhas já encontradas (todas com teste de regressão em `tests/test_parse_ai_response.py` e `tests/test_text_guard.py`):
+
+| Armadilha | O que acontecia |
+|---|---|
+| Regex de flag exigindo valor (`[^\]]+`) | `[ORIGEM=]` não casava e virava balão no chat |
+| Fallback `parts = [texto cru]` | Resposta só de marcador ia inteira para o lead |
+| Regex de mídia sem dígito (`[A-Z_]+`) | `[FOTO_1]` não era reconhecida e saía como texto |
+| Tag convertia o bloco inteiro | O texto colado na tag era descartado, e a 2ª tag do bloco sumia |
+| `[CONTEXTO DO SISTEMA ...]` | Tem espaço e acento, escapava do scrub por caixa alta |
+
+**Ao criar/alterar prompt de nicho:** toda seção de flags precisa da regra "FLAG NUNCA VAI VAZIA" (omitir a flag em vez de emitir sem valor), e toda seção de mídia precisa mandar escrever a tag exata, sozinha na linha.
+
+**Pasta de mídia:** as imagens do cliente vão em `app/media` e `app/main.py` aceita esse caminho **e** `<raiz>/media`. Se o mount não acontecer, a URL do `client.yaml` responde 404 e a UAZAPI não baixa a imagem — **sem erro nenhum no log**. Ao publicar cliente com mídia, conferir com `curl` na URL antes de dar por certo.
+
 ## Regra principal: sincronização cliente → template pleno
 
 Sempre que fizer uma correção ou melhoria em um projeto de cliente do plano pleno, avaliar se a mudança é **genérica** (não depende de dados específicos do cliente) e, se for, aplicar a mesma correção neste template também.

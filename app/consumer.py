@@ -16,6 +16,7 @@ import redis as redis_sync
 from app import db
 from app.config import settings
 from app.images import MEDIA_DICT
+from app.text_guard import strip_control_markers
 from app.services import calendar as calendar_facade
 from app.services import imoveis
 from app.services import lead_intake
@@ -148,17 +149,51 @@ def _is_group(chat_id: str) -> bool:
     return "@g.us" in chat_id
 
 
-def _scrub_unknown_tags(s: str) -> str:
-    """Remove qualquer tag em colchetes no formato [FLAG] ou [FLAG=valor] que
-    nao seja uma tag de midia conhecida. Evita que flags internas escapem para
-    o lead quando a IA emite um formato inesperado (ex.: [CANCELAR_AGENDAMENTO=0]).
-    """
-    def _repl(m: "re.Match[str]") -> str:
-        token = m.group(0)
-        # Preserva tags de midia (ex.: [FOTO_X]); remove o resto.
-        return token if token in MEDIA_DICT else ""
+# Tag de midia. O nome aceita digito porque cliente numera as suas
+# ([FOTO_1], [IMAGEM_FOTOS_2]) — com `[A-Z_]+` nenhuma delas casava e a tag ia
+# como texto puro para o lead em vez de virar o envio da imagem.
+_MEDIA_TAG_RE = re.compile(r"\[[A-Z0-9_]+\]")
 
-    return re.sub(r"\[[A-Z][A-Z0-9_]*(?:=[^\]]*)?\]", _repl, s).strip()
+
+def _extract_flag(text: str, name: str) -> tuple[str | None, str]:
+    """Le a flag `[NOME=valor]` e devolve (valor, texto sem o marcador).
+
+    Aceita de proposito `[NOME=]` (valor vazio), `[NOME]` (sem `=`) e espacos
+    sobrando: os regex antigos exigiam ao menos um caractere no valor, entao um
+    `[ORIGEM=]` emitido pelo modelo nao casava — e quando a resposta era so
+    isso, o fallback devolvia o texto cru direto para o WhatsApp. Remove TODAS
+    as ocorrencias; o valor retornado e o da primeira, e `None` quando a flag
+    nao apareceu.
+    """
+    pattern = re.compile(rf"\[\s*{name}\s*(?:=\s*([^\]\n]*?))?\s*\]", re.IGNORECASE)
+    match = pattern.search(text)
+    value = (match.group(1) or "").strip() if match else None
+    return value, pattern.sub("", text).strip()
+
+
+def _split_media_parts(block: str) -> list[dict]:
+    """Quebra um bloco em baloes de texto e midias, na ordem em que aparecem.
+
+    A tag pode vir sozinha na linha ou colada no texto ("olha so: [FOTO_1]") e
+    pode haver mais de uma no mesmo bloco. Antes so a primeira era considerada
+    e o texto ao redor dela era descartado junto.
+    """
+    out: list[dict] = []
+    cursor = 0
+    for match in _MEDIA_TAG_RE.finditer(block):
+        tag = match.group(0)
+        if tag not in MEDIA_DICT:
+            continue  # marcador desconhecido: o strip final cuida dele
+        before = block[cursor:match.start()].strip()
+        if before:
+            out.append({"type": "text", "content": before})
+        media = MEDIA_DICT[tag]
+        out.append({"type": media["type"], "content": media["url"]})
+        cursor = match.end()
+    tail = block[cursor:].strip()
+    if tail:
+        out.append({"type": "text", "content": tail})
+    return out
 
 
 def _parse_ai_response(text: str) -> tuple[list[dict], bool, bool, tuple[datetime, str] | None, bool]:
@@ -170,25 +205,28 @@ def _parse_ai_response(text: str) -> tuple[list[dict], bool, bool, tuple[datetim
     - Extrai flag [CANCELAR_AGENDAMENTO] (PLENO apenas; cancela o ultimo agendamento ativo)
     - Quebra em partes (por \\n\\n ou |||)
     - Detecta tags de midia e substitui pelos links do dicionario
+    - Passa cada balao de texto pelo strip final (nenhum marcador chega ao lead)
     Retorna (partes, finalizado, transferir, agendar, cancelar_agendamento).
     """
-    finalizado = False
-    match = re.search(r"\[FINALIZADO=(\d)\]", text)
-    if match:
-        finalizado = match.group(1) == "1"
-        text = re.sub(r"\[FINALIZADO=\d\]", "", text).strip()
+    raw_finalizado, text = _extract_flag(text, "FINALIZADO")
+    finalizado = raw_finalizado == "1"
 
-    transferir = False
-    match_t = re.search(r"\[TRANSFERIR=(\d)\]", text)
-    if match_t:
-        transferir = match_t.group(1) == "1"
-        text = re.sub(r"\[TRANSFERIR=\d\]", "", text).strip()
+    raw_transferir, text = _extract_flag(text, "TRANSFERIR")
+    transferir = raw_transferir == "1"
+
+    # CANCELAR_AGENDAMENTO sai antes de AGENDAR so por clareza de leitura — os
+    # dois regex ancoram no `[`, entao um nunca casa o marcador do outro. A IA
+    # as vezes contamina esta flag com o padrao das outras e emite
+    # [CANCELAR_AGENDAMENTO=0]; qualquer valor conta como pedido de cancelamento,
+    # como antes.
+    raw_cancelar, text = _extract_flag(text, "CANCELAR_AGENDAMENTO")
+    cancelar_agendamento = raw_cancelar is not None
 
     agendar: tuple[datetime, str] | None = None
-    match_a = re.search(r"\[AGENDAR=([^\]|]+?)(?:\|([^\]]+))?\]", text)
-    if match_a:
-        iso_str = match_a.group(1).strip()
-        modalidade = (match_a.group(2) or "").strip()
+    raw_agendar, text = _extract_flag(text, "AGENDAR")
+    if raw_agendar:
+        iso_str, _, modalidade = raw_agendar.partition("|")
+        iso_str, modalidade = iso_str.strip(), modalidade.strip()
         try:
             _dt = datetime.fromisoformat(iso_str)
             if _dt.tzinfo is None:
@@ -199,39 +237,31 @@ def _parse_ai_response(text: str) -> tuple[list[dict], bool, bool, tuple[datetim
             agendar = (_dt, modalidade)
         except ValueError:
             logger.warning("AGENDAR com formato invalido: %r", iso_str)
-        text = re.sub(r"\[AGENDAR=[^\]]+\]", "", text).strip()
-
-    # Aceita formato opcional =valor (ex.: =0/=1) caso a IA contamine a flag
-    # com o padrao das flags FINALIZADO/TRANSFERIR e emita [CANCELAR_AGENDAMENTO=0].
-    cancelar_agendamento = False
-    if re.search(r"\[CANCELAR_AGENDAMENTO(?:=[^\]]*)?\]", text):
-        cancelar_agendamento = True
-        text = re.sub(r"\[CANCELAR_AGENDAMENTO(?:=[^\]]*)?\]", "", text).strip()
 
     if "|||" in text:
         raw_parts = [p.strip() for p in text.split("|||") if p.strip()]
     else:
         raw_parts = [p.strip() for p in text.split("\n\n") if p.strip()]
 
-    parts = []
-    for part in raw_parts:
-        tag_match = re.search(r"\[([A-Z0-9_]+)\]", part)
-        if tag_match and f"[{tag_match.group(1)}]" in MEDIA_DICT:
-            tag = f"[{tag_match.group(1)}]"
-            media = MEDIA_DICT[tag]
-            parts.append({"type": media["type"], "content": media["url"]})
-        else:
-            # Rede de seguranca: remove qualquer flag/tag em colchetes que tenha
-            # escapado do parsing (ex.: variacoes de formato como [FLAG=0]) para
-            # nunca vazar codigo interno para o lead. Tags de midia sao preservadas.
-            cleaned = _scrub_unknown_tags(part)
-            if cleaned:
-                parts.append({"type": "text", "content": cleaned})
+    parts: list[dict] = []
+    for block in raw_parts:
+        parts.extend(_split_media_parts(block))
 
-    if not parts:
-        parts = [{"type": "text", "content": text}]
+    # Ultima barreira: limpa qualquer marcador que tenha sobrado (flag nova
+    # inventada pelo modelo, tag de midia inexistente, variacao malformada) e
+    # descarta o balao que ficou vazio depois da limpeza. NAO existe mais
+    # fallback com o texto cru — era por ele que uma resposta composta so de
+    # marcador chegava inteira ao lead.
+    final_parts: list[dict] = []
+    for part in parts:
+        if part["type"] != "text":
+            final_parts.append(part)
+            continue
+        content = strip_control_markers(part["content"])
+        if content:
+            final_parts.append({"type": "text", "content": content})
 
-    return parts, finalizado, transferir, agendar, cancelar_agendamento
+    return final_parts, finalizado, transferir, agendar, cancelar_agendamento
 
 
 # ---- processamento principal ----
@@ -514,6 +544,12 @@ async def _run_ai_and_reply(phone: str, unified_msg: str, lead: dict, rotulo_log
     log(_ai(f"[{phone}] {ai_response[:400]}"))
     if tokens[2]:
         log(f"[TOKENS] Entrada: {tokens[0]} | Sa\u00edda: {tokens[1]} | Total: {tokens[2]}")
+
+    if not parts:
+        # A resposta era so marcador de controle (ou virou vazia depois da
+        # limpeza). Antes isso saia como marcador cru para o lead pelo
+        # fallback; agora nao envia nada e registra para a equipe investigar.
+        log(_warn(f"[{phone}] Resposta sem conteudo apos limpeza de marcadores \u2014 nada enviado"))
 
     for i, part in enumerate(parts):
         try:

@@ -88,9 +88,13 @@ Objetivo central: Conduzir conversa fluida que progride a cada turno, tirando d�
 {% if media %}
 11. MÍDIAS DISPONÍVEIS: você pode enviar imagens incluindo a tag exata em uma linha separada (com `|||` ou linha em branco antes/depois). As tags válidas e quando usar:
 {% if "[IMAGEM_HORARIOS]" in media %}   - `[IMAGEM_HORARIOS]`: SEMPRE que enviar os horários de funcionamento ou o lead perguntar "que horas funciona", "horários", "abre que horas", etc. Envie a tag JUNTO com o texto dos horários.
-{% endif %}{% for tag in media %}{% if tag != "[IMAGEM_HORARIOS]" %}   - `{{ tag }}`: usar conforme contexto.
+{% endif %}{% for tag, info in media.items() %}{% if tag != "[IMAGEM_HORARIOS]" %}   - `{{ tag }}`: {{ info.when | default("usar conforme contexto", true) }}
 {% endif %}{% endfor %}
-   Use APENAS as tags listadas acima. Não invente novas tags.
+   Regras das tags de mídia (OBRIGATÓRIAS):
+   - Escreva a tag EXATAMENTE como está listada acima, com o mesmo nome e o mesmo número, entre colchetes.
+   - A tag vai SOZINHA em uma linha, separada do texto por uma linha em branco. Nunca no meio de uma frase.
+   - NUNCA descreva a tag em palavras nem escreva coisas como "vou te enviar a [IMAGEM]". A tag por si só já dispara o envio.
+   - Use APENAS as tags listadas acima. Não invente novas tags nem altere o número delas.
 {% endif %}
 
 ---
@@ -385,6 +389,9 @@ Ao final da sua mensagem, SEMPRE inclua UMA linha extra com as flags apropriadas
 - `[CANCELAR_AGENDAMENTO]` — inclua quando o lead pedir explicitamente para CANCELAR a aula/avaliação que estava marcada (ex: "não vou poder ir", "preciso cancelar", "desmarca aí"). Use junto da resposta empática ao lead (ex: "Tudo bem! Cancelei pra você. Quando quiser remarcar, é só me chamar."). Não emita essa flag se o lead só está REMARCANDO — nesse caso emita o novo `[AGENDAR=...]`.
 
 As flags não aparecem para o lead — o sistema as remove antes do envio. Elas controlam transferência de atendimento, bloqueio do agente, criação/cancelamento do evento no calendário e sincronização com o painel SAI.
+
+REGRA ABSOLUTA — FLAG NUNCA VAI VAZIA:
+Toda flag precisa de um valor preenchido. Se você ainda não tem a informação, OMITA a flag inteira — nunca escreva `[NOME=]`, `[AGENDAR=]` ou qualquer flag sem valor. Escreva-as SEMPRE na última linha da mensagem, no formato exato acima. Nunca comente sobre elas, nunca as explique e nunca as coloque no meio de uma frase.
 
 ---
 
