@@ -204,21 +204,24 @@ async def is_modo_mudo(phone: str) -> bool:
 
 async def mute_followups(phones: Iterable[str], primary: str) -> None:
     """
-    Corta o follow-up em DEFINITIVO para o lead (atendente humana assumiu).
+    Corta o follow-up em DEFINITIVO para o lead (atendente humana assumiu ou o
+    operador desativou o assistente no SAI).
 
-    Diferente do bloqueio no Redis — que expira amanha 08:00 e so adia a
+    Diferente do bloqueio no Redis — que pode expirar amanha 08:00 e so adia a
     reativacao —, `modo_mudo=1` e permanente: as duas consultas do follow-up
     (`get_followups_due` e o `_seed_inactive_leads` da reativacao) exigem
     `modo_mudo = 0`, entao o lead nunca mais e semeado nem cobrado.
 
     Zera tambem `next_follow_up`/`stage_follow_up` para nao deixar agendamento
     orfao no banco: o `modo_mudo` sozinho ja barraria o envio, mas a linha
-    pendente reapareceria se a flag fosse limpa manualmente algum dia.
+    pendente reapareceria se a flag fosse limpa manualmente algum dia. A fila de
+    1o contato pendente tambem e descartada — desativar o assistente nao pode
+    deixar um disparo engatilhado.
 
     Aplica nas duas variantes do numero (com/sem o 9o digito) porque o
     follow-up pode ter sido agendado sob a outra forma — mas nunca cria linha
-    para variante que ainda nao existe. Desfeito so pelo /reset do lead, que
-    apaga a linha inteira.
+    para variante que ainda nao existe. Desfeito pelo /reset do lead (que apaga
+    a linha inteira) ou por `unmute_followups` ("Ativar assistente" no SAI).
     """
     for variant in phones:
         if variant != primary and not await get_lead(variant):
@@ -229,6 +232,34 @@ async def mute_followups(phones: Iterable[str], primary: str) -> None:
             next_follow_up=None,
             stage_follow_up=0,
         )
+        async with aiosqlite.connect(settings.SQLITE_PATH) as db:
+            await db.execute(
+                """
+                UPDATE lead_dispatch_queue
+                   SET status = 'skipped', last_error = 'assistente pausado'
+                 WHERE phone = ? AND status = 'pending'
+                """,
+                (variant,),
+            )
+            await db.commit()
+
+
+async def unmute_followups(phones: Iterable[str]) -> None:
+    """Desfaz o `mute_followups` — usado quando o operador clica "Ativar
+    assistente" no SAI.
+
+    Só limpa a flag: nao reagenda nada. O ciclo de reativacao volta a valer
+    quando o lead escrever de novo (`touch_last_message`), entao religar o
+    assistente nunca dispara um follow-up atrasado na cara do lead. Nao cria
+    linha para telefone que nao existe na tabela.
+    """
+    async with aiosqlite.connect(settings.SQLITE_PATH) as db:
+        for variant in phones:
+            await db.execute(
+                "UPDATE leads SET modo_mudo=0, updated_at=? WHERE phone=? AND COALESCE(modo_mudo,0)=1",
+                (_now_iso(), variant),
+            )
+        await db.commit()
 
 
 async def schedule_followup(phone: str, next_follow_up_iso: str, stage: int = 1) -> None:

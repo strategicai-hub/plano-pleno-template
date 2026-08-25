@@ -29,6 +29,7 @@ import redis as redis_sync
 from redis.asyncio import Redis
 
 from app.config import settings
+from app.services import redis_service
 from app.services.redis_service import get_redis
 
 log = logging.getLogger(__name__)
@@ -209,6 +210,19 @@ async def save_snapshot(snapshot: dict[str, Any]) -> None:
     r: Redis = await get_redis()
     await r.set(_snapshot_key(slug), json.dumps(snapshot, ensure_ascii=False))
     log.info("sai_sync: snapshot atualizado (slug=%s, updatedAt=%s)", slug, snapshot.get("updatedAt"))
+
+    # Reconciliacao das conversas com assistente desativado. O snapshot chega no
+    # push do painel e no poll de 15 min, entao o estado do SAI (fonte da
+    # verdade) reentra aqui periodicamente — cobre bot fora do ar na hora do
+    # clique, Redis limpo em redeploy e bloqueio perdido, sem depender de o
+    # operador clicar de novo. So roda se o SAI mandar a chave: contra um SAI
+    # antigo (sem o campo) o silencio nao pode ser lido como "ninguem pausado".
+    paused = snapshot.get("pausedPhones")
+    if isinstance(paused, list):
+        try:
+            await redis_service.apply_paused_phones([str(p) for p in paused])
+        except Exception as exc:
+            log.warning("sai_sync: reconciliacao de pausa falhou: %s", exc)
 
 
 async def load_snapshot() -> dict[str, Any] | None:

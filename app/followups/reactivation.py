@@ -120,11 +120,18 @@ async def run() -> None:
             await db.mark_finalizado(phone)
             continue
 
-        # Atendente humano assumiu: bloqueio ativo no Redis (ate amanha 08:00 SP).
-        # Nao reativa por cima do humano — sai sem avancar o estagio, retoma no
-        # proximo run apos o bloqueio expirar.
+        # Bloqueio ativo: ou o atendente humano assumiu (expira amanha 08:00 SP),
+        # ou o operador clicou "Desativar assistente" no SAI (permanente, so sai
+        # com "Ativar assistente"). Em nenhum dos dois o bot pode enviar nada —
+        # sai sem avancar o estagio e retoma quando o bloqueio cair.
+        # `is_blocked` varre as duas formas do numero (com/sem o 9o digito): o
+        # SAI bloqueia pelo telefone canonico e aqui o phone vem do SQLite, que
+        # o indexa pelo JID da UAZAPI. Casar so a string exata ja deixou
+        # follow-up sair depois do "Desativar assistente".
         if await rds.is_blocked(phone):
-            logger.info("[%s] bloqueado (humano assumiu) — reativacao adiada", phone)
+            motivo = "assistente desativado no SAI" if await rds.is_permanently_blocked(phone) \
+                else "humano assumiu"
+            logger.info("[%s] bloqueado (%s) — reativacao adiada", phone, motivo)
             continue
 
         # Trava distribuida: impede que duas execucoes concorrentes do

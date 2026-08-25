@@ -1,13 +1,14 @@
 """Endpoints chamados pelo SAI Comercial (painel/inbox)."""
 import logging
 import re
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
 
 from app import db
 from app.config import settings
-from app.services import redis_service, lead_intake, sai_sync
+from app.services import redis_service, lead_intake, phone_utils, sai_sync
 from app.client_data import load_client_data
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,15 @@ router = APIRouter(prefix=f"{settings.WEBHOOK_PATH}/sai")
 class BlockBody(BaseModel):
     phone: str
     blocked: bool
+    # ISO 8601. Presente = pausa AUTOMATICA de "humano assumiu", que expira nesse
+    # instante (o SAI usa o proximo 08:00 SP). Ausente = pausa do botao
+    # "Desativar assistente", que nao expira. Bot antigo ignorava o campo e
+    # gravava tudo como permanente — o que confundia os dois estados.
+    resumeAt: str | None = None
+    # True = a acao partiu do clique do operador no painel (Desativar/Ativar
+    # assistente). Usado no religar: so o clique devolve o lead ao ciclo de
+    # follow-up; o fim automatico do "humano assumiu" nao ressuscita cobranca.
+    manual: bool = False
 
 
 class LeadItem(BaseModel):
@@ -119,9 +129,21 @@ async def block_phone(
 ):
     """Liga/desliga o bot para um telefone especifico.
 
-    Chamado pelo SAI quando o operador clica 'Desligar IA' / 'Ligar IA' no
-    header de uma conversa. blocked=True grava bloqueio permanente no Redis
-    (sem TTL); blocked=False remove. Idempotente.
+    Chamado pelo SAI em dois casos:
+      * clique em 'Desativar assistente' / 'Ativar assistente' (manual=True);
+      * pausa automatica de "humano assumiu" e seu fim (resumeAt preenchido).
+
+    blocked=True sem `resumeAt` grava bloqueio PERMANENTE (so sai no 'Ativar
+    assistente'); com `resumeAt`, grava com prazo — e a guarda do set_block
+    impede que esse prazo rebaixe um bloqueio permanente que ja exista. Nos dois
+    casos o lead sai do follow-up: nem cobranca automatica pode passar por cima
+    de quem esta sendo atendido na mao ou teve o assistente desligado.
+
+    O telefone chega do SAI canonicalizado COM o 9o digito, enquanto o bot
+    indexa tudo pelo JID da UAZAPI (que costuma vir SEM o 9): por isso bloqueio
+    e corte do follow-up sao aplicados nas DUAS variantes (ver phone_utils).
+    Cortar no SQLite alem do Redis garante que um Redis perdido/limpo nao
+    ressuscite o disparo proativo.
     """
     if not settings.SAI_INGEST_SECRET or x_ingest_secret != settings.SAI_INGEST_SECRET:
         raise HTTPException(status_code=401, detail="invalid secret")
@@ -130,14 +152,34 @@ async def block_phone(
     if not phone:
         raise HTTPException(status_code=400, detail="phone obrigatorio")
 
+    variants = phone_utils.block_variants(phone) or [phone]
+
     if body.blocked:
-        await redis_service.set_permanent_block(phone, reason="manual")
-        logger.info("sai_router: bot DESLIGADO manualmente para %s", phone)
+        ttl = _ttl_until(body.resumeAt)
+        if ttl is None:
+            await redis_service.set_permanent_block(phone, reason="manual")
+            estado = "DESATIVADO (definitivo)"
+        else:
+            await redis_service.set_block(phone, ttl=ttl, reason="human")
+            estado = f"pausado por {ttl}s (humano assumiu)"
+        await db.mute_followups(variants, phone)
+        logger.info(
+            "sai_router: assistente %s para %s (variantes=%s) — follow-ups cortados",
+            estado, phone, ",".join(variants),
+        )
     else:
         await redis_service.clear_block(phone)
-        logger.info("sai_router: bot RELIGADO para %s", phone)
+        # So o clique do operador devolve o lead ao ciclo de follow-up. O fim
+        # automatico do "humano assumiu" nao pode ressuscitar cobranca em quem
+        # a atendente ja pegou na mao.
+        if body.manual:
+            await db.unmute_followups(variants)
+        logger.info(
+            "sai_router: assistente REATIVADO para %s (variantes=%s, manual=%s)",
+            phone, ",".join(variants), body.manual,
+        )
 
-    return {"ok": True, "phone": phone, "blocked": body.blocked}
+    return {"ok": True, "phone": phone, "blocked": body.blocked, "variants": variants}
 
 
 @router.post("/leads")
@@ -203,6 +245,25 @@ async def push_history(
         await db.mute_followups(lead_intake.phone_variants(phone), phone)
     logger.info("sai_router: /history registrou %s (%d chars) para %s", body.role, len(content), phone)
     return {"ok": True, "phone": phone, "role": body.role}
+
+
+def _ttl_until(resume_at: str | None) -> int | None:
+    """Segundos ate `resume_at` (ISO 8601), ou None se ausente/invalido/passado.
+
+    None = bloqueio sem prazo. Data invalida cai em None de proposito: na
+    duvida, o bot fica MAIS calado, nunca menos.
+    """
+    if not resume_at:
+        return None
+    try:
+        target = datetime.fromisoformat(str(resume_at).replace("Z", "+00:00"))
+    except ValueError:
+        logger.warning("sai_router: resumeAt invalido (%r) — tratando como sem prazo", resume_at)
+        return None
+    if target.tzinfo is None:
+        target = target.replace(tzinfo=timezone.utc)
+    seconds = int((target - datetime.now(timezone.utc)).total_seconds())
+    return seconds if seconds > 0 else None
 
 
 _ROUTE_TOKENS = {"LOCACAO", "VENDA_IMOVEL", "VENDA_EMPREENDIMENTO"}

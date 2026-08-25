@@ -79,11 +79,13 @@ async def run() -> None:
 
     for appt in due:
         phone = appt["phone"]
-        # Atendente humano assumiu: bloqueio ativo no Redis (ate amanha 08:00 SP).
-        # Nao envia lembrete por cima do humano — pula sem marcar reminder_sent,
-        # retoma no proximo run apos o bloqueio expirar (se ainda na janela).
+        # Bloqueio ativo: humano assumiu (expira amanha 08:00 SP) ou o operador
+        # desativou o assistente no SAI (permanente). Pula sem marcar
+        # reminder_sent — retoma no proximo run se o bloqueio cair e a janela
+        # ainda valer. `is_blocked` cobre as duas formas do numero (com/sem o
+        # 9o digito), ver phone_utils.
         if await rds.is_blocked(phone):
-            logger.info("[%s] bloqueado (humano assumiu) — lembrete adiado", phone)
+            logger.info("[%s] bloqueado (assistente pausado) — lembrete adiado", phone)
             continue
         # Trava idempotente para impedir reenvio em rolling update do scheduler.
         if not await rds.acquire_followup_lock(phone, ttl=3600):

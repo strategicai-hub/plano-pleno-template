@@ -6,46 +6,20 @@ Versao generica do template: recebe leads estruturados via HTTP do SAI Comercial
 1a mensagem fica com app/followups/lead_dispatch.py.
 """
 import logging
-import re
 
 from app import db
 from app.client_data import load_client_data
 
+# Normalizacao vive em phone_utils (modulo sem dependencias) para que
+# redis_service tambem a use sem ciclo de import. Re-exportado aqui por
+# retrocompat — varios modulos importam `lead_intake.phone_variants`.
+from app.services.phone_utils import (  # noqa: F401
+    only_digits,
+    normalize_br_phone,
+    phone_variants,
+)
+
 logger = logging.getLogger(__name__)
-
-
-def only_digits(s: str) -> str:
-    return re.sub(r"\D", "", s or "")
-
-
-def normalize_br_phone(raw: str) -> str:
-    """Normaliza para digitos com DDI 55. Retorna "" se nao parecer BR valido."""
-    digits = only_digits(raw)
-    if not digits:
-        return ""
-    digits = digits.lstrip("0")  # zero de operadora/DDD (ex.: 021...)
-    if digits.startswith("55") and len(digits) in (12, 13):
-        return digits
-    if len(digits) in (10, 11):  # DDD + assinante, sem DDI
-        return "55" + digits
-    return ""
-
-
-def phone_variants(digits: str) -> set[str]:
-    """Formas com e sem o 9o digito de um numero BR.
-
-    JIDs do WhatsApp podem omitir o 9 em moveis registrados antes da
-    migracao — o lead cadastrado como 5521 9XXXX-XXXX pode responder como
-    5521XXXXXXXX. Matching, dedup e seeding de historico usam as duas formas.
-    """
-    variants = {digits}
-    if digits.startswith("55"):
-        ddd, subscriber = digits[2:4], digits[4:]
-        if len(subscriber) == 9 and subscriber.startswith("9"):
-            variants.add("55" + ddd + subscriber[1:])
-        elif len(subscriber) == 8:
-            variants.add("55" + ddd + "9" + subscriber)
-    return variants
 
 
 async def intake_http(

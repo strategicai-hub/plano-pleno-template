@@ -107,6 +107,25 @@ async def test_mute_followups_marca_variante_existente(temp_db):
     assert due == []
 
 
+async def test_unmute_followups_libera_sem_reagendar(temp_db):
+    """"Ativar assistente" devolve o lead ao ciclo, mas nao dispara follow-up
+    atrasado: o agendamento so volta quando o lead escrever de novo."""
+    now = datetime.now(timezone.utc)
+    past = (now - timedelta(hours=1)).isoformat()
+    phone = "5521999998888"
+
+    await db_mod.schedule_followup(phone, next_follow_up_iso=past, stage=2)
+    await db_mod.mute_followups([phone], phone)
+    await db_mod.unmute_followups([phone, "552199998888"])
+
+    lead = await db_mod.get_lead(phone)
+    assert lead["modo_mudo"] == 0
+    assert lead["next_follow_up"] is None
+    assert await db_mod.get_followups_due(now.isoformat()) == []
+    # variante inexistente nao virou linha fantasma
+    assert await db_mod.get_lead("552199998888") is None
+
+
 async def test_advance_followup_stage_finalizes(temp_db):
     now = datetime.now(timezone.utc).isoformat()
     await db_mod.schedule_followup("5511000000005", next_follow_up_iso=now, stage=3)
