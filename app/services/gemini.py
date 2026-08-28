@@ -11,6 +11,7 @@ Decisões importantes:
 """
 import asyncio
 import logging
+import re
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -327,6 +328,23 @@ def _paragraphs(text: str) -> list[str]:
     return [p.strip() for p in (text or "").split("\n\n") if p.strip()]
 
 
+# Numerais por extenso que denotam quantidade. "um"/"uma" ficam de fora de
+# proposito: sao artigos indefinidos comuns ("um dos nossos imoveis") e barra-los
+# reprovaria toda variacao.
+_NUMERAIS_EXTENSO = {
+    "dois", "duas", "tres", "três", "quatro", "cinco", "seis", "sete", "oito",
+    "nove", "dez", "onze", "doze", "ambas", "ambos",
+}
+
+
+def _quantidades(texto: str) -> set[str]:
+    """Numeros (algarismo ou extenso) presentes no texto, normalizados."""
+    low = (texto or "").lower()
+    numeros = set(re.findall(r"\d+", low))
+    palavras = set(re.findall(r"[a-zà-ÿ]+", low))
+    return numeros | (palavras & _NUMERAIS_EXTENSO)
+
+
 async def vary_message(
     phone: str,
     base_text: str,
@@ -379,6 +397,11 @@ async def vary_message(
         "ou oferta citada; a quantidade de paragrafos; o tamanho aproximado de cada paragrafo; "
         "a ordem dos assuntos. PROIBIDO acrescentar informacao, promessa ou oferta que nao "
         "esteja na mensagem base. PROIBIDO usar asteriscos, markdown ou qualquer formatacao.\n"
+        "PROIBIDO INVENTAR QUANTIDADE (trava absoluta): se a mensagem base diz 'algumas "
+        "perguntas', 'algumas opcoes' ou qualquer quantidade vaga, a reescrita TEM que "
+        "continuar vaga. Nunca troque uma quantidade vaga por um numero ('algumas' -> '3'), "
+        "nem invente numero, prazo, valor ou contagem que nao esteja escrito na mensagem base. "
+        "Numero errado no texto vira promessa quebrada com o cliente.\n"
         f"REGRA DO NOME (prioritaria): {regra_nome}\n"
         f"ESTRUTURA OBRIGATORIA: a resposta tem que ter exatamente {len(base_paras)} paragrafo(s), "
         "separados por UMA linha em branco (cada paragrafo vira um balao no WhatsApp).\n"
@@ -434,6 +457,17 @@ async def vary_message(
         return ""
     if "*" in variacao or "#" in variacao:
         logger.warning("vary_message: variacao descartada para %s (markdown na saida)", phone)
+        return ""
+    # Quantidade inventada: "algumas perguntinhas" virou "3 perguntinhas" numa
+    # abertura cujo roteiro tem 4 perguntas. O modelo concretiza quantidade vaga
+    # se deixarem, e um numero errado no 1o contato e promessa quebrada — a
+    # instrucao no prompt sozinha nao basta.
+    extras = _quantidades(variacao) - _quantidades(base)
+    if extras:
+        logger.warning(
+            "vary_message: variacao descartada para %s (quantidade inventada: %s)",
+            phone, sorted(extras),
+        )
         return ""
     if not (0.6 <= len(variacao) / max(len(base), 1) <= 1.6):
         logger.warning(
