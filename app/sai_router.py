@@ -1,7 +1,7 @@
 """Endpoints chamados pelo SAI Comercial (painel/inbox)."""
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
@@ -33,6 +33,10 @@ class LeadItem(BaseModel):
     externalId: str | None = None
     name: str | None = None
     phone: str
+    # Origem declarada por quem entregou o lead (ex.: "META_LEAD_ADS" para o
+    # formulario de Lead Ads da Meta). Opcional — lead sem origem segue o
+    # roteiro generico de 1o contato.
+    origin: str | None = None
 
 
 class LeadsBody(BaseModel):
@@ -202,7 +206,12 @@ async def receive_leads(
 
     tenant_slug = (body.tenantSlug or settings.SAI_TENANT_SLUG or "sai").strip()
     leads = [
-        {"externalId": li.externalId, "name": li.name, "phone": li.phone}
+        {
+            "externalId": li.externalId,
+            "name": li.name,
+            "phone": li.phone,
+            "origin": li.origin,
+        }
         for li in body.leads
     ]
     enqueued, skipped, invalid = await lead_intake.intake_http(leads, tenant_slug)
@@ -266,7 +275,10 @@ def _ttl_until(resume_at: str | None) -> int | None:
     return seconds if seconds > 0 else None
 
 
-_ROUTE_TOKENS = {"LOCACAO", "VENDA_IMOVEL", "VENDA_EMPREENDIMENTO"}
+# META_FORM: lead que preencheu o formulario de Lead Ads da Meta. A abertura ja
+# pediu permissao e ja fez a pergunta 1 do roteiro — o prompt trata essa rota
+# separado das rotas do Painel IA.
+_ROUTE_TOKENS = {"LOCACAO", "VENDA_IMOVEL", "VENDA_EMPREENDIMENTO", "META_FORM"}
 
 
 @router.post("/dispatch-context")
@@ -329,6 +341,16 @@ async def dispatch_context(
     await redis_service.update_lead(
         phone, name=nome, status_conversa="Primeiro contato enviado"
     )
+
+    # Entra na regua de follow-up igual ao disparo local (lead_dispatch): quem
+    # foi disparado pelo motor do SAI e nunca respondeu ficava fora da
+    # reativacao, porque `_seed_inactive_leads` so pega quem tem
+    # last_customer_message_at preenchido.
+    ld_cfg = (load_client_data() or {}).get("lead_dispatch") or {}
+    after_hours = int(ld_cfg.get("followup_after_hours", 24))
+    if after_hours > 0:
+        next_iso = (datetime.now(timezone.utc) + timedelta(hours=after_hours)).isoformat()
+        await db.schedule_followup(phone, next_follow_up_iso=next_iso, stage=1)
 
     logger.info("sai_router: /dispatch-context semeou ATIVO rota=%s para %s", route, phone)
     return {"ok": True, "phone": phone, "route": route}

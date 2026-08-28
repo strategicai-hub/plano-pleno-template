@@ -88,6 +88,10 @@ def _ensure_dir() -> None:
 # ja existe — engolimos o erro.
 _MIGRATIONS = [
     "ALTER TABLE lead_dispatch_queue ADD COLUMN external_id TEXT",
+    # Origem declarada pela ponte que entregou o lead (ex.: "META_LEAD_ADS").
+    # Decide o roteiro de abertura e a rota semeada no historico — sem ela o
+    # lead do formulario da Meta seria tratado como um lead externo qualquer.
+    "ALTER TABLE lead_dispatch_queue ADD COLUMN origem TEXT",
     # `leads.nome` passa a guardar SO o nome que o contato informou na conversa.
     # O nome que ele preencheu no cadastro de origem vive aqui, separado —
     # misturar as duas origens no mesmo campo foi o que fez o push_name do
@@ -608,6 +612,7 @@ async def enqueue_lead_dispatch(
     source_phone: str = "",
     raw_block: str = "",
     external_id: str = "",
+    origem: str = "",
     dedup_hours: int = 72,
     variants: Optional[set[str]] = None,
 ) -> tuple[int, bool]:
@@ -638,11 +643,11 @@ async def enqueue_lead_dispatch(
             """
             INSERT INTO lead_dispatch_queue
                 (phone, nome, email, operadora, observacao, vidas,
-                 source_phone, raw_block, external_id, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+                 source_phone, raw_block, external_id, origem, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
             """,
             (phone, nome, email, operadora, observacao, vidas,
-             source_phone, raw_block, external_id, _now_iso()),
+             source_phone, raw_block, external_id, origem, _now_iso()),
         )
         await db.commit()
         return cur.lastrowid or 0, True

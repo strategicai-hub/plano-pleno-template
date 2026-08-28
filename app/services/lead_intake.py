@@ -27,7 +27,8 @@ async def intake_http(
 ) -> tuple[int, int, int]:
     """Enfileira leads recebidos via HTTP do SAI Comercial (payload estruturado).
 
-    Cada item: {"externalId", "name", "phone"}. O payload ja vem estruturado
+    Cada item: {"externalId", "name", "phone", "origin"}. O `origin` (ex.:
+    "META_LEAD_ADS") decide o roteiro de abertura e a rota semeada no historico. O payload ja vem estruturado
     (nao parseia texto). Guarda o externalId para o callback de status.
     Retorna (enfileirados, dedupados, invalidos).
     """
@@ -43,19 +44,21 @@ async def intake_http(
             continue
         nome = (str(item.get("name") or "")).strip()
         external_id = str(item.get("externalId") or "")
+        origem = (str(item.get("origin") or "")).strip().upper()
         _row_id, created = await db.enqueue_lead_dispatch(
             phone=phone,
             nome=nome,
             source_phone=source_phone,
             external_id=external_id,
+            origem=origem,
             dedup_hours=dedup_hours,
             variants=phone_variants(phone),
         )
         if created:
             enqueued += 1
             logger.info(
-                "[lead_intake] Lead HTTP %s (%s) enfileirado (externalId=%s, origem=%s)",
-                phone, nome, external_id, source_phone,
+                "[lead_intake] Lead HTTP %s (%s) enfileirado (externalId=%s, tenant=%s, origem=%s)",
+                phone, nome, external_id, source_phone, origem or "-",
             )
         else:
             skipped += 1

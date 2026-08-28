@@ -1,14 +1,30 @@
 """
-Reativacao de leads inativos.
+Reativacao de leads inativos — duas trilhas.
 
 Trigger: lead com `next_follow_up <= now` em SQLite, nao finalizado e nao em
-modo_mudo. Gera mensagem personalizada via Gemini, envia via UAZAPI, avanca
-o estagio e reagenda para o proximo dia. Em `max_stages` finaliza.
+modo_mudo. Envia a mensagem da trilha, avanca o estagio e reagenda. No ultimo
+estagio da trilha, finaliza.
 
-A marcacao inicial de `next_follow_up` deve ser feita pelo consumer (ou por
-um job separado) quando o lead fica inativo por `inactive_hours`. Esta etapa
-e tratada no proprio run() — calculamos aqui tambem para leads que passaram
-`inactive_hours` sem next_follow_up setado.
+TRILHAS (a escolha e por lead, derivada de `last_customer_message_at`):
+
+- `no_reply`  — o lead NUNCA respondeu. O relogio comeca no ENVIO do 1o contato
+  (quem agenda o estagio 1 e o `lead_dispatch`, via `followup_after_hours`).
+- `stalled`   — o lead respondeu e parou. O relogio comeca no ultimo retorno
+  dele. `_seed_inactive_leads` captura esses leads apos `inactive_hours`.
+
+A transicao entre trilhas nao precisa de estado proprio: quando o lead responde,
+`db.touch_last_message()` zera estagio e agendamento e preenche
+`last_customer_message_at` — ele sai sozinho da trilha `no_reply` para a
+`stalled`.
+
+Cliente que nao declarar as trilhas em `followups.reactivation` continua no
+comportamento antigo (trilha unica): `_track_cfg` cai nos valores chapados.
+
+TEXTO: quando ha template do cliente (`followups.templates.<trilha>_stage_N`),
+ele e a fonte da mensagem e a IA so o reescreve com outras palavras
+(`gemini.vary_message`) — texto identico em massa e o principal gatilho de
+bloqueio do WhatsApp. Sem template, cai na geracao livre a partir do historico
+(`generate_reactivation_message`).
 """
 import logging
 from datetime import datetime, timedelta, timezone
@@ -18,8 +34,9 @@ from zoneinfo import ZoneInfo
 from app import db
 from app.client_data import load_client_data
 from app.config import settings
+from app.followups import templates
 from app.services import nomes, redis_service as rds, sai_sync, uazapi
-from app.services.gemini import generate_reactivation_message
+from app.services.gemini import generate_reactivation_message, vary_message
 
 logger = logging.getLogger("followup.reactivation")
 
@@ -28,10 +45,35 @@ logger = logging.getLogger("followup.reactivation")
 # tolera duas falhas seguidas antes de calar a cobranca.
 RECONCILE_MAX_AGE_SECONDS = 45 * 60
 
+TRACK_NO_REPLY = "no_reply"
+TRACK_STALLED = "stalled"
+
 
 def _cfg() -> dict:
     data = load_client_data() or {}
     return (data.get("followups") or {}).get("reactivation") or {}
+
+
+def _track_cfg(cfg: dict, track: str) -> dict:
+    """Config da trilha, com fallback para o formato antigo (trilha unica).
+
+    Cliente que ainda nao separou as trilhas tem `inactive_hours`/`max_stages`
+    direto no bloco `reactivation` — esses valores continuam valendo para as
+    duas trilhas, e o comportamento fica igual ao de antes.
+    """
+    sub = cfg.get(track)
+    if isinstance(sub, dict) and sub:
+        return sub
+    return {
+        "inactive_hours": cfg.get("inactive_hours", 24),
+        "max_stages": cfg.get("max_stages", 3),
+        "interval_hours": cfg.get("interval_hours", 24),
+    }
+
+
+def _track_for(lead: dict) -> str:
+    """Trilha do lead: respondeu alguma vez -> `stalled`; nunca -> `no_reply`."""
+    return TRACK_STALLED if (lead.get("last_customer_message_at") or "") else TRACK_NO_REPLY
 
 
 def _now_tz() -> datetime:
@@ -42,6 +84,10 @@ async def _seed_inactive_leads(now_tz: datetime, inactive_hours: int) -> None:
     """
     Marca next_follow_up = now para leads com last_customer_message_at antigo
     (sem next_follow_up agendado) — assim o loop abaixo os captura.
+
+    So alimenta a trilha `stalled`: o filtro exige `last_customer_message_at`
+    preenchido. Quem nunca respondeu entra na trilha `no_reply` pelo agendamento
+    feito no disparo do 1o contato.
     """
     now_utc = now_tz.astimezone(timezone.utc)
     cutoff = (now_utc - timedelta(hours=inactive_hours)).isoformat()
@@ -113,6 +159,27 @@ async def _sai_state_is_fresh() -> bool:
     return True
 
 
+async def _build_message(
+    phone: str,
+    nome: str,
+    track: str,
+    stage: int,
+    now_tz: datetime,
+) -> str:
+    """Mensagem do estagio: template do cliente (variado pela IA) ou geracao livre."""
+    base = templates.get_override_first(
+        [f"{track}_stage_{stage}", f"reactivation_stage_{stage}"],
+        nome=nome,
+        saudacao=templates.saudacao(now_tz),
+    )
+    if base:
+        variacao = await vary_message(phone, base, nome=nome, kind="REACTIVATION")
+        return variacao or base
+
+    now_str = now_tz.strftime("%A, %d/%m/%Y %H:%M")
+    return await generate_reactivation_message(phone, nome, stage, now_str)
+
+
 async def run() -> None:
     cfg = _cfg()
     if not cfg.get("enabled", False):
@@ -121,8 +188,6 @@ async def run() -> None:
     if not await _sai_state_is_fresh():
         return
 
-    inactive_hours = int(cfg.get("inactive_hours", 24))
-    max_stages = int(cfg.get("max_stages", 3))
     # Teto de envios por execucao. Ao ligar a reativacao num bot com base
     # acumulada, TODOS os leads inativos ficam devidos no mesmo ciclo — sem
     # teto isso vira centenas de mensagens em minutos (risco de ban no
@@ -132,7 +197,8 @@ async def run() -> None:
     now_tz = _now_tz()
     now_utc_iso = now_tz.astimezone(timezone.utc).isoformat()
 
-    await _seed_inactive_leads(now_tz, inactive_hours)
+    stalled_cfg = _track_cfg(cfg, TRACK_STALLED)
+    await _seed_inactive_leads(now_tz, int(stalled_cfg.get("inactive_hours", 24)))
 
     due = await db.get_followups_due(now_utc_iso)
     if not due:
@@ -156,6 +222,11 @@ async def run() -> None:
         # confiavel — nesse caso a mensagem sai sem vocativo.
         nome = nomes.nome_do_lead(lead)
         stage = int(lead.get("stage_follow_up") or 1)
+
+        track = _track_for(lead)
+        track_cfg = _track_cfg(cfg, track)
+        max_stages = int(track_cfg.get("max_stages", 3))
+        interval_hours = int(track_cfg.get("interval_hours", 24))
 
         if stage > max_stages:
             await db.mark_finalizado(phone)
@@ -182,11 +253,10 @@ async def run() -> None:
             logger.info("[%s] follow-up ja em andamento, pulando", phone)
             continue
 
-        now_str = now_tz.strftime("%A, %d/%m/%Y %H:%M")
         try:
-            msg = await generate_reactivation_message(phone, nome, stage, now_str)
+            msg = await _build_message(phone, nome, track, stage, now_tz)
         except Exception:
-            logger.exception("[%s] falha ao gerar reativacao", phone)
+            logger.exception("[%s] falha ao gerar reativacao (trilha=%s)", phone, track)
             # Adia 1h para nao reentrar a cada 15min enquanto Gemini esta fora.
             retry_iso = (now_tz + timedelta(hours=1)).astimezone(timezone.utc).isoformat()
             await db.schedule_followup(phone, next_follow_up_iso=retry_iso, stage=stage)
@@ -194,17 +264,17 @@ async def run() -> None:
             continue
 
         if not msg:
-            logger.info("[%s] mensagem vazia (stage=%d), pulando", phone, stage)
+            logger.info("[%s] mensagem vazia (trilha=%s stage=%d), pulando", phone, track, stage)
             retry_iso = (now_tz + timedelta(hours=1)).astimezone(timezone.utc).isoformat()
             await db.schedule_followup(phone, next_follow_up_iso=retry_iso, stage=stage)
             await rds.release_followup_lock(phone)
             continue
 
         if settings.FOLLOWUP_DRY_RUN:
-            logger.info("[DRY_RUN][%s] stage=%d -> %s", phone, stage, msg[:160])
+            logger.info("[DRY_RUN][%s] trilha=%s stage=%d -> %s", phone, track, stage, msg)
         else:
             try:
-                await uazapi.send_text(phone, msg)
+                await uazapi.send_paragraphs(phone, msg)
             except Exception:
                 logger.exception("[%s] falha ao enviar reativacao", phone)
                 # Adia 1h para nao tentar reenviar a cada 15min (ex.: UAZAPI fora
@@ -218,7 +288,7 @@ async def run() -> None:
         new_stage = stage + 1 if not finalize else max_stages
         next_iso = None
         if not finalize:
-            next_iso = (now_tz + timedelta(days=1)).astimezone(timezone.utc).isoformat()
+            next_iso = (now_tz + timedelta(hours=interval_hours))                 .astimezone(timezone.utc).isoformat()
 
         await db.advance_followup_stage(phone, new_stage, next_iso, finalize)
         await rds.release_followup_lock(phone)
@@ -226,6 +296,6 @@ async def run() -> None:
         # gravada em lugar nenhum — sem isso nao da para auditar o que o bot
         # mandou em cada follow-up.
         logger.info(
-            "[%s] ENVIADO stage=%d nome=%r texto=%r (proximo=%s finalize=%s)",
-            phone, stage, nome, msg, next_iso or "-", finalize,
+            "[%s] ENVIADO trilha=%s stage=%d nome=%r texto=%r (proximo=%s finalize=%s)",
+            phone, track, stage, nome, msg, next_iso or "-", finalize,
         )

@@ -18,6 +18,12 @@ massa e envio em rajada sao os principais gatilhos de bloqueio):
 Apos o envio, o historico do lead e semeado no Redis (contexto + mensagem
 enviada) para que o fluxo normal do bot continue a qualificacao quando ele
 responder, e um follow-up D+1 e agendado na infra de reativacao existente.
+
+ORIGEM DO LEAD: quando a ponte informa de onde o lead veio (campo `origin` do
+POST /sai/leads — ex.: "META_LEAD_ADS", o formulario de Lead Ads da Meta), o
+disparo usa o roteiro de abertura proprio daquela origem
+(`lead_dispatch.templates_by_origin`) e semeia a rota correspondente no
+historico, para o prompt saber qual triagem conduzir.
 """
 import asyncio
 import logging
@@ -29,10 +35,18 @@ from zoneinfo import ZoneInfo
 from app import db
 from app.client_data import load_client_data
 from app.config import settings
+from app.followups import templates as fu_templates
 from app.services import lead_intake, nomes, redis_service as rds, sai_sync, uazapi
-from app.services.gemini import generate_first_contact_message
+from app.services.gemini import generate_first_contact_message, vary_message
 
 logger = logging.getLogger("followup.lead_dispatch")
+
+# Rota semeada no historico por origem do lead. A rota diz ao prompt qual
+# triagem conduzir quando o lead responder. Sobrescrivivel via
+# client.yaml > lead_dispatch.routes_by_origin.
+DEFAULT_ROUTES_BY_ORIGIN = {
+    "META_LEAD_ADS": "META_FORM",
+}
 
 # Fallback quando o Gemini falha/retorna vazio. Sobrescrevivel via
 # client.yaml > lead_dispatch.templates. Placeholders: {nome}, {saudacao},
@@ -102,11 +116,47 @@ def spacing_seconds() -> int:
 
 
 def _saudacao(now_tz: datetime) -> str:
-    if now_tz.hour < 12:
-        return "bom dia"
-    if now_tz.hour < 18:
-        return "boa tarde"
-    return "boa noite"
+    return fu_templates.saudacao(now_tz)
+
+
+def _origem(item: dict) -> str:
+    return (str(item.get("origem") or "")).strip().upper()
+
+
+def _route_for_origin(origem: str, cfg: dict) -> str:
+    """Rota a semear no historico para a origem do lead ("" = sem rota)."""
+    if not origem:
+        return ""
+    overrides = cfg.get("routes_by_origin") or {}
+    mapa = {**DEFAULT_ROUTES_BY_ORIGIN, **{str(k).upper(): v for k, v in overrides.items()}}
+    return str(mapa.get(origem) or "").strip().upper()
+
+
+def _template_for_origin(origem: str, cfg: dict, item: dict, now_tz: datetime) -> str:
+    """Roteiro de abertura escrito pelo cliente para aquela origem ("" = nao ha).
+
+    Diferente do pool de `FALLBACK_TEMPLATES` (usado so quando a IA falha), este
+    texto e a FONTE da mensagem: a IA apenas o reescreve com outras palavras.
+    """
+    if not origem:
+        return ""
+    por_origem = cfg.get("templates_by_origin") or {}
+    raw = por_origem.get(origem) or ""
+    if not isinstance(raw, str) or not raw.strip():
+        return ""
+    data = load_client_data() or {}
+    values = {
+        "nome": nomes.nome_para_vocativo(nome_cadastro=item.get("nome") or ""),
+        "saudacao": _saudacao(now_tz),
+        "assistente": ((data.get("assistant") or {}).get("name") or "").strip(),
+    }
+    try:
+        return fu_templates.limpar_vocativo_vazio(raw.format(**values))
+    except (KeyError, IndexError):
+        logger.warning(
+            "lead_dispatch: templates_by_origin[%s] tem placeholder invalido, ignorando", origem,
+        )
+        return ""
 
 
 def _render_fallback(item: dict, cfg: dict, now_tz: datetime) -> str:
@@ -208,14 +258,23 @@ async def _dispatch_one(item: dict, cfg: dict, now_tz: datetime) -> None:
     # Vocativo do 1o contato: so o nome do cadastro, e so se for nome de
     # pessoa. Cadastro com lixo ("🖤❤️", "ZAP 2 tim") vira mensagem sem nome.
     nome_vocativo = nomes.nome_para_vocativo(nome_cadastro=nome)
+    origem = _origem(item)
 
-    msg = await generate_first_contact_message(
-        phone,
-        nome_vocativo,
-        observacao=item.get("observacao") or "",
-    )
-    if not msg:
-        msg = _render_fallback(item, cfg, now_tz)
+    # Origem com roteiro proprio (ex.: formulario da Meta): o texto do cliente e
+    # a fonte da mensagem e a IA so o reescreve com outras palavras — todo lead
+    # da mesma origem recebe a mesma abertura, e texto identico em massa e o
+    # principal gatilho de bloqueio do WhatsApp. Falhou a variacao, vai o literal.
+    base = _template_for_origin(origem, cfg, item, now_tz)
+    if base:
+        msg = await vary_message(phone, base, nome=nome_vocativo, kind="FIRST_CONTACT") or base
+    else:
+        msg = await generate_first_contact_message(
+            phone,
+            nome_vocativo,
+            observacao=item.get("observacao") or "",
+        )
+        if not msg:
+            msg = _render_fallback(item, cfg, now_tz)
 
     # Corrida: o lead pode ter mandado mensagem enquanto a IA gerava. Se ja ha
     # historico agora, o fluxo normal do bot assumiu — disparar por cima
@@ -237,7 +296,9 @@ async def _dispatch_one(item: dict, cfg: dict, now_tz: datetime) -> None:
         await asyncio.sleep(2)
     except Exception:
         logger.warning("[%s] send_presence falhou (seguindo com o envio)", phone)
-    await uazapi.send_text(phone, msg, delay=random.randint(4000, 9000))
+    # Baloes: a abertura escrita pelo cliente tem varios paragrafos e num balao
+    # so parece e-mail colado. Texto de uma linha so continua saindo em 1 balao.
+    await uazapi.send_paragraphs(phone, msg, delay=random.randint(4000, 9000))
 
     await db.mark_dispatch_sent(item["id"])
 
@@ -257,13 +318,27 @@ async def _dispatch_one(item: dict, cfg: dict, now_tz: datetime) -> None:
     # Seeding do historico: quando o lead responder, o gemini.chat() ve este
     # contexto + a mensagem enviada e continua a qualificacao naturalmente.
     # Semeia nas duas variantes porque o JID da resposta pode vir sem o 9.
-    contexto = (
-        "[CONTEXTO DO SISTEMA: lead recebido de origem externa. "
-        f"Nome preenchido por ele no cadastro: {nome_vocativo or '-'}. "
-        f"Observacao do cadastro: {item.get('observacao') or '-'}. "
-        "Voce iniciou o contato com a mensagem a seguir — quando o lead responder, "
-        "continue a qualificacao a partir dela, sem se apresentar de novo.]"
-    )
+    #
+    # Com rota conhecida, usa o marcador de contato ATIVO — mesmo formato que a
+    # ponte /sai/dispatch-context semeia e que o prompt do nicho ja sabe ler.
+    # Sem rota, mantem o texto generico (nichos que nao tem rotas).
+    rota = _route_for_origin(origem, cfg)
+    if rota:
+        contexto = (
+            "[CONTEXTO DO SISTEMA: contato ATIVO iniciado por nós. "
+            f"Rota: {rota}. "
+            f"Nome: {nome_vocativo or '-'}. "
+            "Não se reapresente; quando o lead responder, conduza a triagem da rota "
+            f"{rota} e, ao final, encaminhe ao corretor.]"
+        )
+    else:
+        contexto = (
+            "[CONTEXTO DO SISTEMA: lead recebido de origem externa. "
+            f"Nome preenchido por ele no cadastro: {nome_vocativo or '-'}. "
+            f"Observacao do cadastro: {item.get('observacao') or '-'}. "
+            "Voce iniciou o contato com a mensagem a seguir — quando o lead responder, "
+            "continue a qualificacao a partir dela, sem se apresentar de novo.]"
+        )
     for v in variants:
         await rds.append_chat_history(v, "user", contexto)
         await rds.append_chat_history(v, "model", msg)

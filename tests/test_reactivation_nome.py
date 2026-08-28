@@ -5,6 +5,9 @@ A reativacao lia `lead["nome"]` cru do SQLite e disparou "Oi Tutu" — "Tutu" er
 o nome do perfil do WhatsApp do lead, cujo cadastro dizia "MARCOS FERNANDO DE
 TURETTA". O fix anterior so havia blindado o chat reativo; este canal ficou de
 fora e continuou errando por mais um dia.
+
+A trava vale nos DOIS caminhos de texto da reativacao: o template escrito pelo
+cliente (`followups.templates.*`) e a geracao livre pela IA.
 """
 import os
 import tempfile
@@ -15,6 +18,7 @@ import pytest
 import app.db as db_mod
 from app.config import settings
 from app.followups import reactivation as react
+from app.followups import templates as tpl
 
 
 @pytest.fixture
@@ -24,12 +28,15 @@ def env(monkeypatch):
         monkeypatch.setattr(settings, "SQLITE_PATH", os.path.join(tmp, "t.db"))
         db_mod.init_db_sync()
 
-        state = {"nomes_gerados": [], "enviadas": []}
+        state = {"nomes_gerados": [], "enviadas": [], "overrides": {}}
 
         monkeypatch.setattr(
             react, "_cfg",
             lambda: {"enabled": True, "inactive_hours": 24, "max_stages": 3},
         )
+        # Templates do cliente sob controle do teste (o client.yaml real do
+        # projeto nao deve influenciar a trava de nome).
+        monkeypatch.setattr(tpl, "_overrides", lambda: state["overrides"])
 
         async def fake_blocked(phone):
             return False
@@ -48,11 +55,16 @@ def env(monkeypatch):
             state["nomes_gerados"].append(nome)
             return f"Oi {nome}, ainda tem interesse?" if nome else "Oi, ainda tem interesse?"
 
+        async def fake_vary(phone, base_text, *, nome="", kind=""):
+            # Variacao desligada: o teste checa o texto que o cliente escreveu.
+            return ""
+
         async def fake_send(number, text, delay=None):
             state["enviadas"].append((number, text))
 
         monkeypatch.setattr(react, "generate_reactivation_message", fake_generate)
-        monkeypatch.setattr(react.uazapi, "send_text", fake_send)
+        monkeypatch.setattr(react, "vary_message", fake_vary)
+        monkeypatch.setattr(react.uazapi, "send_paragraphs", fake_send)
         yield state
 
 
@@ -93,3 +105,26 @@ async def test_lead_sem_nome_nenhum_sai_sem_vocativo(env):
 
     assert env["nomes_gerados"] == [""]
     assert env["enviadas"][0][1] == "Oi, ainda tem interesse?"
+
+
+async def test_template_do_cliente_tambem_respeita_a_trava_de_nome(env):
+    """O caminho por template nao pode ser porta dos fundos para o push_name."""
+    env["overrides"]["no_reply_stage_1"] = "Oi {nome}, ainda tem interesse?"
+    await _agenda("5521964603429", nome="Wagner Garage")
+    await react.run()
+
+    # Template assumiu: a geracao livre nem foi chamada.
+    assert env["nomes_gerados"] == []
+    texto = env["enviadas"][0][1]
+    assert "Garage" not in texto
+    # Nome vazio nao pode deixar virgula orfa ("Oi , ainda tem").
+    assert texto == "Oi, ainda tem interesse?"
+
+
+async def test_sem_template_do_cliente_usa_a_geracao_livre(env):
+    """DEFAULTS genericos nao podem sequestrar a reativacao personalizada."""
+    await _agenda("5521992728866", nome_cadastro="Marcos Fernando")
+    await react.run()
+
+    assert env["nomes_gerados"] == ["Marcos"]
+    assert env["enviadas"][0][1] == "Oi Marcos, ainda tem interesse?"

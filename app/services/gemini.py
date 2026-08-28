@@ -323,6 +323,127 @@ async def generate_handoff_summary(phone: str) -> str:
         return ""
 
 
+def _paragraphs(text: str) -> list[str]:
+    return [p.strip() for p in (text or "").split("\n\n") if p.strip()]
+
+
+async def vary_message(
+    phone: str,
+    base_text: str,
+    *,
+    nome: str = "",
+    kind: str = "VARIATION",
+) -> str:
+    """Reescreve com outras palavras um texto escrito pelo cliente, preservando
+    intencao, fatos, estrutura de baloes e tamanho.
+
+    Por que existe: mensagens proativas (abertura do disparo, follow-ups) sao o
+    MESMO texto para todo lead — e texto identico enviado em massa e o principal
+    gatilho de bloqueio do WhatsApp. Variar as palavras mantendo o conteudo
+    protege o numero sem tirar o roteiro das maos do cliente.
+
+    Retorna "" quando falha ou quando a saida nao respeita a estrutura do texto
+    base — nesses casos o caller envia o literal, que sempre e melhor do que uma
+    reescrita que perdeu um paragrafo ou inventou informacao.
+    """
+    base = (base_text or "").strip()
+    if not base:
+        return ""
+
+    base_paras = _paragraphs(base)
+    client_data = load_client_data()
+    business_name = (client_data.get("business") or {}).get("name") or ""
+    assistant_name = ((client_data.get("assistant") or {}).get("name") or "").strip()
+
+    if nome:
+        regra_nome = (
+            f"O contato se chama {nome} — este e o UNICO nome permitido no vocativo. "
+            "Mantenha o vocativo onde ele ja esta no texto base."
+        )
+    else:
+        regra_nome = (
+            "Voce NAO sabe o nome deste contato. Se o texto base tiver um vocativo vazio "
+            "ou uma virgula orfa, ajuste a frase para fluir sem nome. PROIBIDO inventar nome."
+        )
+
+    prompt = (
+        f"Voce e {assistant_name or 'a assistente'}"
+        + (f" da {business_name}" if business_name else "")
+        + ".\n"
+        "Reescreva a MENSAGEM BASE abaixo com outras palavras. Nao e uma mensagem nova: "
+        "e a MESMA mensagem, dita de um jeito um pouco diferente.\n\n"
+        f"PODE variar: saudacao e abertura; sinonimos e conectivos; ordem das frases dentro "
+        f"de um paragrafo; a forma da pergunta final; contracoes (para/pra); presenca de no "
+        f"maximo 1 emoji.\n"
+        "NAO PODE mudar: a intencao e o pedido final; nenhum fato, nome proprio, numero, valor "
+        "ou oferta citada; a quantidade de paragrafos; o tamanho aproximado de cada paragrafo; "
+        "a ordem dos assuntos. PROIBIDO acrescentar informacao, promessa ou oferta que nao "
+        "esteja na mensagem base. PROIBIDO usar asteriscos, markdown ou qualquer formatacao.\n"
+        f"REGRA DO NOME (prioritaria): {regra_nome}\n"
+        f"ESTRUTURA OBRIGATORIA: a resposta tem que ter exatamente {len(base_paras)} paragrafo(s), "
+        "separados por UMA linha em branco (cada paragrafo vira um balao no WhatsApp).\n"
+        "Responda APENAS com o texto reescrito, sem comentario nenhum.\n\n"
+        "MENSAGEM BASE:\n"
+        f"{base}"
+    )
+
+    try:
+        client = _get_client()
+        t0 = time.monotonic()
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=_MODEL,
+            contents=[gtypes.Content(role="user", parts=[gtypes.Part.from_text(text=prompt)])],
+            config=gtypes.GenerateContentConfig(
+                # Alta de proposito: o objetivo da chamada e justamente que duas
+                # execucoes do mesmo texto base saiam diferentes.
+                temperature=0.9,
+                # Teto folgado sobre o base: sem isso a reescrita de um texto de
+                # 5 paragrafos sai cortada no meio.
+                max_output_tokens=max(300, len(base) // 2),
+                thinking_config=_THINKING_OFF,
+            ),
+        )
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        inp, out, _ = _usage_tokens(response)
+        log_message_async(
+            lead_phone=phone,
+            direction="OUTBOUND",
+            kind=kind,
+            model=_MODEL,
+            input_tokens=inp,
+            output_tokens=out,
+            latency_ms=latency_ms,
+        )
+        variacao = (response.text or "").strip()
+    except Exception:
+        logger.exception("Erro ao variar mensagem para %s (kind=%s)", phone, kind)
+        return ""
+
+    if not variacao:
+        return ""
+    # Guarda-costas da estrutura: o modelo as vezes junta tudo num paragrafo so
+    # ou inventa um "P.S.". Perder um balao ou ganhar um estraga a mensagem que
+    # o cliente escreveu — nesses casos o literal e a escolha certa.
+    novos = _paragraphs(variacao)
+    if len(novos) != len(base_paras):
+        logger.warning(
+            "vary_message: variacao descartada para %s (%d paragrafos, esperado %d)",
+            phone, len(novos), len(base_paras),
+        )
+        return ""
+    if "*" in variacao or "#" in variacao:
+        logger.warning("vary_message: variacao descartada para %s (markdown na saida)", phone)
+        return ""
+    if not (0.6 <= len(variacao) / max(len(base), 1) <= 1.6):
+        logger.warning(
+            "vary_message: variacao descartada para %s (tamanho %d vs base %d)",
+            phone, len(variacao), len(base),
+        )
+        return ""
+    return variacao
+
+
 async def generate_reactivation_message(
     phone: str,
     nome: str,

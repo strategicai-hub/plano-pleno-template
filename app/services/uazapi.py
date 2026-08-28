@@ -114,6 +114,35 @@ async def send_text(number: str, text: str, delay: int = 4000) -> dict:
     return data
 
 
+async def send_paragraphs(number: str, text: str, delay: int = 4000) -> int:
+    """Envia um texto multi-paragrafo como baloes separados no WhatsApp.
+
+    Mesma quebra usada nas respostas da IA (`consumer.py`): linha em branco
+    separa balao. Reativa "digitando..." antes de cada balao — a presenca some
+    assim que a mensagem anterior e entregue, e sem isso os baloes 2..N chegam
+    sem indicador nenhum.
+
+    Mensagens proativas escritas pelo cliente (abertura do disparo, follow-ups)
+    tem varios paragrafos; mandar tudo num balao so faz o texto parecer um
+    e-mail colado. Retorna quantos baloes foram enviados.
+
+    Falha no meio para o envio: entregar os baloes seguintes deixaria a mensagem
+    picada e fora de ordem. `send_text` ja fez os proprios reenvios.
+    """
+    parts = [p.strip() for p in (text or "").split("\n\n") if p.strip()]
+    if not parts:
+        return 0
+    for i, part in enumerate(parts):
+        if i:
+            try:
+                await send_presence(number, "composing")
+            except Exception:  # noqa: BLE001 — presenca e nice-to-have
+                pass
+            await asyncio.sleep(1.5)
+        await send_text(number, part, delay=delay if i == 0 else 1000)
+    return len(parts)
+
+
 async def send_presence(number: str, presence: str = "composing") -> None:
     """Emite presenca (digitando.../gravando.../online) para o numero.
 

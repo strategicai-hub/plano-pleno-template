@@ -180,6 +180,15 @@ differentials:
 #   # Auxiliadora e Foxter respondem; os outros caem no aviso de "nao abriu".
 #   own_sites:
 #     - minhaimobiliaria.com.br
+#   # Roteiro de qualificacao proprio da casa. Quando presente, substitui as
+#   # triagens de venda do nicho (VENDA IMOVEL / VENDA EMPREENDIMENTO) em todas
+#   # as conversas; LOCACAO e MINHA CASA MINHA VIDA continuam valendo.
+#   triagem:
+#     nome: "TRIAGEM PADRÃO"
+#     perguntas:
+#       - texto: "Você busca imóvel para morar ou para investir?"
+#       - transicao: "Excelente!"        # balao curto antes da pergunta (opcional)
+#         texto: "Quais são os itens indispensáveis no imóvel para você?"
 # leadflow:
 #   direction: inbound              # inbound | outbound | ambos
 
@@ -210,6 +219,40 @@ appointments:
     sun: []
 
 # ============================================================
+# DISPARO DE 1o CONTATO (exclusivo do plano pleno)
+# ============================================================
+# Dispara a 1a mensagem para leads recebidos de origem externa (POST /sai/leads
+# do SAI Comercial), com anti-bloqueio: fila SQLite, cron 1x/min, espacamento
+# aleatorio, cap diario, janela de horario e presence "digitando". Desligado por
+# padrao — ligar por cliente quando fizer sentido.
+lead_dispatch:
+  enabled: false
+  spacing_minutes_min: 3       # espacamento aleatorio entre envios (anti-ban)
+  spacing_minutes_max: 8
+  days: "mon-fri"              # estilo cron: "mon-fri", "mon-sun", "mon,wed,fri"
+  hours_start: "08:00"         # janela de horario (SCHEDULER_TZ)
+  hours_end: "18:00"
+  daily_cap: 60                # teto de 1os contatos por dia
+  dedup_hours: 72              # janela de dedup por telefone
+  followup_after_hours: 24     # 1o follow-up N horas APOS O ENVIO (0 desliga)
+  http_intake_enabled: true    # aceita leads via POST /sai/leads
+  callback_enabled: true       # reporta SENT ao SAI apos enviar
+  # OPCIONAL — roteiro de abertura por ORIGEM do lead (campo `origin` do
+  # POST /sai/leads; ex.: META_LEAD_ADS, o formulario de Lead Ads da Meta).
+  # Com texto aqui, ele e a mensagem: a IA so o reescreve com outras palavras a
+  # cada envio. Sem ele, vale o 1o contato generico gerado pela IA.
+  # Placeholders: {nome}, {saudacao}, {assistente}. Linha em branco = balao.
+  # templates_by_origin:
+  #   META_LEAD_ADS: |
+  #     Olá, {nome}! Tudo bem? Meu nome é {assistente}.
+  #
+  #     1) O que você procura?
+  # Rota semeada no historico por origem — o prompt do nicho usa para escolher a
+  # triagem. Default embutido: META_LEAD_ADS -> META_FORM.
+  # routes_by_origin:
+  #   META_LEAD_ADS: META_FORM
+
+# ============================================================
 # FOLLOW-UPS AUTOMATICOS (exclusivo do plano pleno)
 # ============================================================
 # Jobs disparados pelo scheduler.py (APScheduler).
@@ -225,11 +268,36 @@ followups:
                                  # Ao ligar a reativacao num bot com base acumulada,
                                  # todo o backlog fica devido no mesmo ciclo — o teto
                                  # faz escoar aos poucos e evita ban no WhatsApp.
+    # OPCIONAL — duas reguas separadas. A trilha e escolhida por lead: quem nunca
+    # respondeu cai em `no_reply` (relogio comeca no ENVIO do 1o contato, agendado
+    # pelo lead_dispatch); quem respondeu e parou cai em `stalled` (relogio comeca
+    # no ultimo retorno dele). Sem estes blocos, `inactive_hours`/`max_stages`
+    # acima valem para as duas — o comportamento historico.
+    # no_reply:
+    #   max_stages: 3            # ex.: 24h, 48h, 72h — o ultimo encerra o contato
+    #   interval_hours: 24
+    # stalled:
+    #   inactive_hours: 48       # horas desde o ultimo retorno do lead
+    #   max_stages: 1            # uma unica retomada
+    #   interval_hours: 48
   appointment_reminder:
     enabled: true
     hours_before: 3              # envia lembrete X horas antes do agendamento
     cadence_minutes: 15          # frequencia do job (em minutos)
   templates:
+    # Placeholders: {nome} (vazio quando nao ha nome confiavel — a virgula orfa e
+    # limpa sozinha) e {saudacao} (bom dia/boa tarde/boa noite pela hora do envio).
+    # Linha em branco separa balao no WhatsApp.
+    #
+    # Com texto aqui, ELE e a mensagem: a IA so o reescreve com outras palavras a
+    # cada envio (anti-ban), preservando conteudo, tamanho e numero de baloes.
+    # SEM texto aqui, a reativacao e gerada livremente pela IA a partir da
+    # conversa — que costuma ser melhor. So escreva template quando o cliente
+    # exigir um texto especifico.
+    #
+    # Trilhas (quando `no_reply`/`stalled` estao configurados acima):
+    # no_reply_stage_1: "Olá, {nome}, {saudacao}! ..."
+    # stalled_stage_1: "Olá, {nome}! Tudo bem, por aí? ..."
     reactivation_stage_1: "Oi {nome}, passando pra saber se ainda tem interesse!"
     reactivation_stage_2: "Oi {nome}, consegui um horario especial pra voce — quer aproveitar?"
     reactivation_stage_3: "Oi {nome}, ultima chance — posso segurar sua vaga?"
