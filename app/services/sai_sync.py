@@ -29,7 +29,9 @@ import redis as redis_sync
 from redis.asyncio import Redis
 
 from app.config import settings
+from app.services import redis_keys as keys
 from app.services import redis_service
+from app.services.phone_utils import block_variants
 from app.services.redis_service import get_redis
 
 log = logging.getLogger(__name__)
@@ -219,10 +221,69 @@ async def save_snapshot(snapshot: dict[str, Any]) -> None:
     # antigo (sem o campo) o silencio nao pode ser lido como "ninguem pausado".
     paused = snapshot.get("pausedPhones")
     if isinstance(paused, list):
+        lista = [str(p) for p in paused]
         try:
-            await redis_service.apply_paused_phones([str(p) for p in paused])
+            await redis_service.apply_paused_phones(lista)
         except Exception as exc:
             log.warning("sai_sync: reconciliacao de pausa falhou: %s", exc)
+        # O bloqueio no Redis cala o bot, mas sozinho nao cancela a cobranca:
+        # o `next_follow_up` continuaria pendente no SQLite, pronto para sair
+        # assim que o bloqueio caisse. Corta o follow-up das duas formas do
+        # numero (o SAI manda o canonico COM o 9; o SQLite indexa pelo JID).
+        try:
+            from app import db as _db  # import tardio: evita ciclo no boot
+
+            variantes: set[str] = set()
+            for p in lista:
+                variantes.update(block_variants(p) or [p])
+            cortados = await _db.mute_followups_bulk(variantes)
+            if cortados:
+                log.info("sai_sync: %d follow-up(s) cortado(s) pela lista de pausa do SAI", cortados)
+        except Exception as exc:
+            log.warning("sai_sync: corte de follow-up na reconciliacao falhou: %s", exc)
+
+        # Carimbo de frescor: o follow-up so dispara se esta lista tiver sido
+        # conferida ha pouco (ver reactivation.run). Marcado por ultimo, de
+        # proposito — se a reconciliacao acima falhou, o carimbo nao avanca e o
+        # follow-up prefere ficar calado a cobrar com informacao velha.
+        try:
+            await mark_reconciled()
+        except Exception as exc:
+            log.warning("sai_sync: carimbo de reconciliacao falhou: %s", exc)
+
+
+async def mark_reconciled() -> None:
+    """Carimba agora como o instante da ultima reconciliacao bem-sucedida."""
+    r: Redis = await get_redis()
+    await r.set(keys.sai_reconciled_key(), str(datetime.now(timezone.utc).timestamp()))
+
+
+async def seconds_since_reconcile() -> float | None:
+    """Ha quantos segundos a lista de pausados do SAI foi conferida.
+
+    None = nunca foi conferida neste Redis (bot recem-subido, Redis limpo ou SAI
+    que ainda nao manda `pausedPhones`). Quem consome decide o que fazer com a
+    ausencia — aqui nao inventamos um valor."""
+    try:
+        r: Redis = await get_redis()
+        raw = await r.get(keys.sai_reconciled_key())
+        if not raw:
+            return None
+        return max(datetime.now(timezone.utc).timestamp() - float(raw), 0.0)
+    except Exception as exc:
+        log.warning("sai_sync: leitura do carimbo de reconciliacao falhou: %s", exc)
+        return None
+
+
+async def sai_integration_active() -> bool:
+    """True se este bot esta vinculado a um tenant do SAI (binding ou env).
+
+    Sem vinculo, o SAI nao e fonte de verdade sobre pausas e o follow-up nao
+    tem por que esperar por ele."""
+    try:
+        return bool(await _active_config_async())
+    except Exception:
+        return False
 
 
 async def load_snapshot() -> dict[str, Any] | None:

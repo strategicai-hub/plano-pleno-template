@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS leads (
   next_follow_up TEXT,
   stage_follow_up INTEGER DEFAULT 0,
   last_customer_message_at TEXT,
+  followup_hold_at TEXT,
   status_conversa TEXT DEFAULT 'novo',
   updated_at TEXT
 );
@@ -92,7 +93,39 @@ _MIGRATIONS = [
     # misturar as duas origens no mesmo campo foi o que fez o push_name do
     # WhatsApp virar vocativo (ver app/services/nomes.py).
     "ALTER TABLE leads ADD COLUMN nome_cadastro TEXT",
+    # Instante em que a cobranca automatica foi retida por causa de gente de
+    # verdade na conversa (atendente respondeu ou operador desativou o
+    # assistente). Trava DURAVEL: diferente do bloqueio no Redis — que some se o
+    # Redis for limpo — e do `modo_mudo` — que o "Ativar assistente" zera —, esta
+    # marca vive no SQLite e so cai quando o LEAD volta a escrever. Enquanto ela
+    # for mais recente que a ultima mensagem do lead, nenhum follow-up sai.
+    "ALTER TABLE leads ADD COLUMN followup_hold_at TEXT",
 ]
+
+# Correcoes de DADOS (nao de schema), idempotentes por construcao — rodam junto
+# das migracoes a cada boot e, depois da primeira vez, nao atingem linha nenhuma.
+_BACKFILLS = [
+    # Leads ja mudos quando a coluna nasceu: sem isto, a trava nova so valeria
+    # para atendimentos FUTUROS e a base acumulada seguiria protegida apenas
+    # pelo `modo_mudo`. `updated_at` e o instante em que o corte foi aplicado.
+    """
+    UPDATE leads
+       SET followup_hold_at = COALESCE(updated_at, datetime('now'))
+     WHERE COALESCE(modo_mudo, 0) = 1
+       AND followup_hold_at IS NULL
+    """,
+]
+
+# Predicado compartilhado pelas duas consultas de follow-up (a que semeia e a que
+# envia). Fica aqui, num lugar so, para as duas nunca divergirem: um follow-up
+# que escapasse por uma delas ja bastaria para cobrar um lead em atendimento.
+FOLLOWUP_HOLD_CLAUSE = """
+              AND (
+                    l.followup_hold_at IS NULL
+                 OR (l.last_customer_message_at IS NOT NULL
+                     AND l.last_customer_message_at > l.followup_hold_at)
+              )
+"""
 
 
 def _apply_migrations_sync(con: sqlite3.Connection) -> None:
@@ -101,6 +134,14 @@ def _apply_migrations_sync(con: sqlite3.Connection) -> None:
             con.execute(stmt)
         except sqlite3.OperationalError:
             pass
+    con.commit()
+    for stmt in _BACKFILLS:
+        try:
+            cur = con.execute(stmt)
+            if cur.rowcount:
+                logger.info("SQLite backfill: %d linha(s) ajustada(s)", cur.rowcount)
+        except sqlite3.OperationalError as exc:
+            logger.warning("SQLite backfill falhou: %s", exc)
     con.commit()
 
 
@@ -126,6 +167,12 @@ async def init_db() -> None:
                 await db.execute(stmt)
             except Exception:  # noqa: BLE001 — coluna ja existe
                 pass
+        await db.commit()
+        for stmt in _BACKFILLS:
+            try:
+                await db.execute(stmt)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("SQLite backfill falhou: %s", exc)
         await db.commit()
     logger.info("SQLite inicializado em %s", settings.SQLITE_PATH)
 
@@ -231,6 +278,7 @@ async def mute_followups(phones: Iterable[str], primary: str) -> None:
             modo_mudo=1,
             next_follow_up=None,
             stage_follow_up=0,
+            followup_hold_at=_now_iso(),
         )
         async with aiosqlite.connect(settings.SQLITE_PATH) as db:
             await db.execute(
@@ -244,19 +292,80 @@ async def mute_followups(phones: Iterable[str], primary: str) -> None:
             await db.commit()
 
 
+async def mute_followups_bulk(phones: Iterable[str]) -> int:
+    """Corta o follow-up de varios leads de uma vez, sem criar linha nova.
+
+    Usado na reconciliacao com o snapshot do SAI: toda conversa que o painel
+    lista como pausada (assistente desligado no botao ou atendente humano no
+    comando) sai do ciclo de cobranca aqui tambem. So toca em quem ja existe e
+    ainda nao esta mudo — a cada poll o custo e uma UPDATE que normalmente nao
+    atinge nenhuma linha.
+
+    Fecha o buraco em que o POST /sai/block se perdeu (bot fora do ar, Redis
+    limpo): o bloqueio voltava pela reconciliacao, mas o `next_follow_up` seguia
+    pendente no SQLite, pronto para disparar assim que o bloqueio saisse.
+
+    Retorna quantas linhas foram cortadas.
+    """
+    alvos = [p for p in {str(x).strip() for x in phones} if p]
+    if not alvos:
+        return 0
+    # Lotes de 400: o SQLite limita os parametros de uma query (SQLITE_LIMIT_
+    # VARIABLE_NUMBER, 999 em builds antigos) e a lista de pausados do SAI pode
+    # chegar a milhares de telefones em tenant grande.
+    cortados = 0
+    async with aiosqlite.connect(settings.SQLITE_PATH) as db:
+        for i in range(0, len(alvos), 400):
+            lote = alvos[i : i + 400]
+            placeholders = ",".join("?" * len(lote))
+            cur = await db.execute(
+                f"""
+                UPDATE leads
+                   SET modo_mudo = 1,
+                       next_follow_up = NULL,
+                       stage_follow_up = 0,
+                       followup_hold_at = ?,
+                       updated_at = ?
+                 WHERE phone IN ({placeholders})
+                   AND COALESCE(modo_mudo, 0) = 0
+                """,
+                [_now_iso(), _now_iso(), *lote],
+            )
+            cortados += cur.rowcount or 0
+            await db.execute(
+                f"""
+                UPDATE lead_dispatch_queue
+                   SET status = 'skipped', last_error = 'assistente pausado'
+                 WHERE phone IN ({placeholders}) AND status = 'pending'
+                """,
+                lote,
+            )
+        await db.commit()
+        return cortados
+
+
 async def unmute_followups(phones: Iterable[str]) -> None:
     """Desfaz o `mute_followups` — usado quando o operador clica "Ativar
     assistente" no SAI.
 
-    Só limpa a flag: nao reagenda nada. O ciclo de reativacao volta a valer
-    quando o lead escrever de novo (`touch_last_message`), entao religar o
-    assistente nunca dispara um follow-up atrasado na cara do lead. Nao cria
-    linha para telefone que nao existe na tabela.
+    Nao reagenda nada, mas devolve o lead ao ciclo: o clique e uma ordem
+    explicita do operador ("quero a IA de volta nesta conversa"), entao derruba
+    junto a trava `followup_hold_at` deixada pelo atendimento humano. E o unico
+    caminho que a derruba sem o lead escrever — decisao de produto, para que
+    religar o assistente signifique religar o assistente inteiro. Nao cria linha
+    para telefone que nao existe na tabela.
     """
     async with aiosqlite.connect(settings.SQLITE_PATH) as db:
         for variant in phones:
             await db.execute(
-                "UPDATE leads SET modo_mudo=0, updated_at=? WHERE phone=? AND COALESCE(modo_mudo,0)=1",
+                """
+                UPDATE leads
+                   SET modo_mudo = 0,
+                       followup_hold_at = NULL,
+                       updated_at = ?
+                 WHERE phone = ?
+                   AND (COALESCE(modo_mudo, 0) = 1 OR followup_hold_at IS NOT NULL)
+                """,
                 (_now_iso(), variant),
             )
         await db.commit()
@@ -274,16 +383,22 @@ async def schedule_followup(phone: str, next_follow_up_iso: str, stage: int = 1)
 async def get_followups_due(now_iso: str) -> list[dict]:
     """Leads devidos para reativação. Exclui leads com appointment ativo
     (booked/reminded com scheduled_at >= now) — quem já tem aula marcada não
-    deve ser reativado como lead frio."""
+    deve ser reativado como lead frio.
+
+    Exclui também quem está sob `followup_hold_at` (atendente humano na
+    conversa) sem ter voltado a escrever: o `modo_mudo` sozinho não bastava,
+    porque uma linha já agendada ANTES do atendimento humano sobrevivia a
+    qualquer limpeza posterior da flag."""
     async with aiosqlite.connect(settings.SQLITE_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            """
+            f"""
             SELECT l.* FROM leads l
             WHERE l.next_follow_up IS NOT NULL
               AND l.next_follow_up <= ?
               AND COALESCE(l.status_conversa, '') NOT IN ('finalizado', 'agendado')
               AND COALESCE(l.modo_mudo, 0) = 0
+              {FOLLOWUP_HOLD_CLAUSE}
               AND NOT EXISTS (
                   SELECT 1 FROM appointments a
                   WHERE a.phone = l.phone

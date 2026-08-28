@@ -63,6 +63,16 @@ def dispatch_gate_key() -> str:
     return f"{settings.PROJECT_SLUG}:lead_dispatch:gate"
 
 
+def sai_reconciled_key() -> str:
+    """Instante (epoch) da ultima reconciliacao da lista de pausados do SAI.
+
+    Global do projeto e gravada pela API (que faz o polling), lida pelo
+    scheduler (que dispara o follow-up) — os dois processos compartilham o
+    mesmo Redis. E o que permite ao follow-up saber se esta trabalhando com
+    informacao fresca sobre quem esta em atendimento humano."""
+    return f"{settings.PROJECT_SLUG}:sai:reconciled-at"
+
+
 def session_log_key() -> str:
     return f"{settings.PROJECT_SLUG}:logs"
 

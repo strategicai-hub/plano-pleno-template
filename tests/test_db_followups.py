@@ -126,6 +126,88 @@ async def test_unmute_followups_libera_sem_reagendar(temp_db):
     assert await db_mod.get_lead("552199998888") is None
 
 
+# --------------------------------------------------------------------------
+# Trava durável: `followup_hold_at`
+#
+# O bloqueio no Redis some se o Redis for limpo e o `modo_mudo` some no "Ativar
+# assistente" — as duas travas anteriores dependiam de estado volátil. Esta vive
+# no SQLite e só cai quando o LEAD volta a escrever (ou no clique do operador).
+# --------------------------------------------------------------------------
+
+
+async def test_hold_segura_o_follow_up_sem_depender_do_modo_mudo(temp_db):
+    """A garantia central: atendente falou -> nao sai cobranca, mesmo que a
+    flag `modo_mudo` se perca (Redis limpo, redeploy, restauracao de backup)."""
+    now = datetime.now(timezone.utc)
+    past = (now - timedelta(hours=1)).isoformat()
+    antigo = (now - timedelta(days=3)).isoformat()
+    phone = "5521999997777"
+
+    await db_mod.upsert_lead(phone, last_customer_message_at=antigo, status_conversa="em_andamento")
+    await db_mod.mute_followups([phone], phone)
+    assert (await db_mod.get_lead(phone))["followup_hold_at"] is not None
+
+    # Simula a perda da flag volatil e um reagendamento posterior.
+    await db_mod.upsert_lead(phone, modo_mudo=0)
+    await db_mod.schedule_followup(phone, next_follow_up_iso=past, stage=1)
+
+    assert await db_mod.get_followups_due(now.isoformat()) == []
+
+
+async def test_lead_que_volta_a_escrever_sai_do_hold(temp_db):
+    """A trava e do atendimento, nao do lead: quando ele responde, a conversa
+    volta a ser dele e o ciclo de cobranca segue normalmente."""
+    now = datetime.now(timezone.utc)
+    past = (now - timedelta(hours=1)).isoformat()
+    antigo = (now - timedelta(days=3)).isoformat()
+    phone = "5521999996666"
+
+    await db_mod.upsert_lead(phone, last_customer_message_at=antigo, status_conversa="em_andamento")
+    await db_mod.mute_followups([phone], phone)
+    await db_mod.upsert_lead(phone, modo_mudo=0)  # so a trava nova em jogo
+    await db_mod.schedule_followup(phone, next_follow_up_iso=past, stage=1)
+    assert await db_mod.get_followups_due(now.isoformat()) == []
+
+    await db_mod.touch_last_message(phone)  # o lead escreveu
+    await db_mod.schedule_followup(phone, next_follow_up_iso=past, stage=1)
+
+    due = await db_mod.get_followups_due(datetime.now(timezone.utc).isoformat())
+    assert [d["phone"] for d in due] == [phone]
+
+
+async def test_ativar_assistente_derruba_o_hold(temp_db):
+    """Decisao de produto: o clique em "Ativar assistente" religa o assistente
+    INTEIRO, follow-up incluso. E o unico caminho que dispensa o lead escrever —
+    se este teste quebrar, o botao virou meia-solucao."""
+    phone = "5521999995555"
+    await db_mod.mute_followups([phone], phone)
+    assert (await db_mod.get_lead(phone))["followup_hold_at"] is not None
+
+    await db_mod.unmute_followups([phone])
+
+    lead = await db_mod.get_lead(phone)
+    assert lead["followup_hold_at"] is None
+    assert lead["modo_mudo"] == 0
+
+
+async def test_mute_bulk_da_reconciliacao_tambem_marca_o_hold(temp_db):
+    """A lista de pausados do SAI corta em massa — e o corte precisa deixar a
+    mesma marca duravel do corte individual, senao a reconciliacao protegeria
+    menos que o eco da mensagem."""
+    now = datetime.now(timezone.utc)
+    past = (now - timedelta(hours=1)).isoformat()
+    phone = "5521999994444"
+
+    await db_mod.schedule_followup(phone, next_follow_up_iso=past, stage=1)
+    cortados = await db_mod.mute_followups_bulk([phone, "5521000000000"])
+
+    assert cortados == 1  # so o que existia
+    lead = await db_mod.get_lead(phone)
+    assert lead["modo_mudo"] == 1
+    assert lead["followup_hold_at"] is not None
+    assert await db_mod.get_lead("5521000000000") is None  # nao cria linha nova
+
+
 async def test_advance_followup_stage_finalizes(temp_db):
     now = datetime.now(timezone.utc).isoformat()
     await db_mod.schedule_followup("5511000000005", next_follow_up_iso=now, stage=3)

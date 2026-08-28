@@ -18,10 +18,15 @@ from zoneinfo import ZoneInfo
 from app import db
 from app.client_data import load_client_data
 from app.config import settings
-from app.services import nomes, redis_service as rds, uazapi
+from app.services import nomes, redis_service as rds, sai_sync, uazapi
 from app.services.gemini import generate_reactivation_message
 
 logger = logging.getLogger("followup.reactivation")
+
+# Idade maxima aceitavel da lista de pausados do SAI para que o follow-up possa
+# disparar. O painel reconcilia a cada 15 min (POLL_INTERVAL_SECONDS): 45 min
+# tolera duas falhas seguidas antes de calar a cobranca.
+RECONCILE_MAX_AGE_SECONDS = 45 * 60
 
 
 def _cfg() -> dict:
@@ -46,7 +51,7 @@ async def _seed_inactive_leads(now_tz: datetime, inactive_hours: int) -> None:
     async with aiosqlite.connect(settings.SQLITE_PATH) as conn:
         conn.row_factory = aiosqlite.Row
         cur = await conn.execute(
-            """
+            f"""
             SELECT l.phone FROM leads l
             WHERE l.next_follow_up IS NULL
               AND l.last_customer_message_at IS NOT NULL
@@ -54,6 +59,7 @@ async def _seed_inactive_leads(now_tz: datetime, inactive_hours: int) -> None:
               AND COALESCE(l.status_conversa, '') NOT IN ('finalizado', 'agendado')
               AND COALESCE(l.modo_mudo, 0) = 0
               AND COALESCE(l.stage_follow_up, 0) = 0
+              {db.FOLLOWUP_HOLD_CLAUSE}
               AND NOT EXISTS (
                   SELECT 1 FROM appointments a
                   WHERE a.phone = l.phone
@@ -75,9 +81,44 @@ async def _seed_inactive_leads(now_tz: datetime, inactive_hours: int) -> None:
         logger.info("reactivation: %d lead(s) sementeados para reativacao", len(rows))
 
 
+async def _sai_state_is_fresh() -> bool:
+    """A lista de conversas em atendimento humano esta atualizada?
+
+    O SAI e a fonte da verdade sobre quem tem gente de verdade na conversa, e
+    quem a reconcilia e a API (polling de 15 min) — este job roda em OUTRO
+    processo (scheduler) e enxerga o resultado pelo Redis/SQLite compartilhados.
+    Se a API esta fora, se o SAI esta fora ou se o Redis foi limpo, o scheduler
+    seguiria disparando com uma foto velha de quem esta pausado e cobraria lead
+    em pleno atendimento — foi essa a janela que sobrou depois de o bloqueio e o
+    `modo_mudo` cobrirem o caminho normal.
+
+    Sem vinculo com o SAI o gate nao se aplica (bot autonomo).
+    """
+    if not await sai_sync.sai_integration_active():
+        return True
+    idade = await sai_sync.seconds_since_reconcile()
+    if idade is None:
+        logger.warning(
+            "reactivation: lista de pausados do SAI ainda nao conferida neste Redis — "
+            "nenhum follow-up sai ate a primeira reconciliacao"
+        )
+        return False
+    if idade > RECONCILE_MAX_AGE_SECONDS:
+        logger.warning(
+            "reactivation: lista de pausados do SAI conferida ha %.0f min (limite %.0f) — "
+            "follow-up suspenso ate a sincronizacao voltar",
+            idade / 60, RECONCILE_MAX_AGE_SECONDS / 60,
+        )
+        return False
+    return True
+
+
 async def run() -> None:
     cfg = _cfg()
     if not cfg.get("enabled", False):
+        return
+
+    if not await _sai_state_is_fresh():
         return
 
     inactive_hours = int(cfg.get("inactive_hours", 24))
