@@ -315,9 +315,15 @@ async def dispatch_context(
     ficha = (body.empreendimentoFicha or "").strip()
 
     # Evita que o eco fromMe do disparo (relayado pela UAZAPI) vire set_block.
+    # A UAZAPI devolve o id em dois formatos ("owner:msgid" e "msgid" limpo) —
+    # registramos os dois, senao o webhook nao reconhece o eco e bloqueia o bot.
     if body.sentId:
         try:
-            await redis_service.mark_outbound_id(str(body.sentId))
+            sent_id = str(body.sentId)
+            await redis_service.mark_outbound_id(sent_id)
+            tail = sent_id.split(":")[-1]
+            if tail and tail != sent_id:
+                await redis_service.mark_outbound_id(tail)
         except Exception:
             logger.warning("dispatch-context: mark_outbound_id falhou (seguindo)")
 

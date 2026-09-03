@@ -34,6 +34,38 @@ def _is_reset_confirmation(text: str) -> bool:
     return normalized == "conversa reiniciada"
 
 
+# customId que o SAI Comercial carimba em cada envio. "human" = atendente
+# respondeu pelo painel (o unico envio por API que representa gente de verdade).
+_CUSTOM_ID_HUMAN = "human"
+
+
+def _is_api_send_without_human(msg: dict) -> bool:
+    """True quando o eco fromMe veio de um envio por API que NAO e a atendente.
+
+    Sem isso, qualquer mensagem enviada direto na UAZAPI (follow-up manual,
+    script de operacao, outro bot) chegava aqui como fromMe "anonimo" e o
+    consumer travava o assistente ate as 08:00 do dia seguinte — enquanto o
+    painel do SAI seguia mostrando a IA ligada, porque la esse mesmo envio e
+    classificado como `sentFromBot` e nao pausa nada. O lead ficava sem
+    resposta sem nenhum sinal visivel de que o bot estava mudo.
+
+    Atendente digitando no celular chega com wasSentByApi=False e continua
+    travando; atendente pelo painel do SAI chega com customId="human" e
+    tambem continua travando.
+    """
+    custom_id = str(msg.get("customId") or msg.get("custom_id") or "").strip().lower()
+    if custom_id == _CUSTOM_ID_HUMAN:
+        return False
+    was_sent_by_api = bool(
+        msg.get("wasSentByApi")
+        or msg.get("wassentbyapi")
+        or msg.get("was_sent_by_api")
+        or msg.get("fromApi")
+        or msg.get("from_api")
+    )
+    return was_sent_by_api
+
+
 
 @router.post(settings.WEBHOOK_PATH)
 async def webhook(request: Request):
@@ -50,14 +82,33 @@ async def webhook(request: Request):
 
     # Eco do proprio bot: mensagens enviadas pelo bot voltam (reenviadas pelo
     # SAI Comercial) com fromMe=True. Identificamos pelo id exato registrado no
-    # envio. NAO descartamos por `wasSentByApi` — a atendente humana respondendo
-    # pelo painel tambem chega com wasSentByApi=True, e precisa disparar o
-    # bloqueio. O filtro de track_source ("IA"/"n8n") acima ja cobre os ecos do
-    # bot; este check por id e a rede de seguranca caso track_source se perca.
+    # envio. `wasSentByApi` sozinho nao serve de filtro — a atendente humana
+    # respondendo pelo painel tambem chega assim; por isso o descarte olha o
+    # customId (ver _is_api_send_without_human). O filtro de track_source
+    # ("IA"/"n8n") acima ja cobre os ecos do bot; este check por id e a rede de
+    # seguranca caso track_source se perca.
     if from_me:
-        msg_id = msg.get("id") or msg.get("messageid") or ""
-        if msg_id and await rds.is_outbound_id(msg_id):
-            return {"status": "ignored", "reason": "own outbound echo (id)"}
+        # A UAZAPI entrega o mesmo id em dois formatos: `id` = "owner:msgid"
+        # (com prefixo do numero da instancia) e `messageid` = "msgid" limpo.
+        # Quem registrou o outbound (bot ou SAI, via /sai/dispatch-context) pode
+        # ter gravado qualquer um dos dois — checar so `id` deixava o eco passar.
+        raw_ids = [msg.get("id"), msg.get("messageid"), msg.get("messageId")]
+        candidates: list[str] = []
+        for raw in raw_ids:
+            if not raw:
+                continue
+            s = str(raw)
+            if s not in candidates:
+                candidates.append(s)
+            tail = s.split(":")[-1]
+            if tail and tail not in candidates:
+                candidates.append(tail)
+        for cand in candidates:
+            if await rds.is_outbound_id(cand):
+                return {"status": "ignored", "reason": "own outbound echo (id)"}
+        if _is_api_send_without_human(msg):
+            logger.info("Eco fromMe por API sem customId=human — ignorado (nao trava o bot)")
+            return {"status": "ignored", "reason": "api send, not human takeover"}
 
     # Quando fromMe=True (atendente humano enviou pelo WhatsApp Web/celular),
     # sender_pn e o numero DA EMPRESA e chatid e o do LEAD (destinatario).
