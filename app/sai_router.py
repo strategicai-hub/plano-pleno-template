@@ -342,11 +342,24 @@ async def dispatch_context(
         await redis_service.append_chat_history(v, "user", contexto)
         await redis_service.append_chat_history(v, "model", body.sentMessage)
 
-    if not await redis_service.get_lead(phone):
-        await redis_service.create_lead(phone, nome)
-    await redis_service.update_lead(
-        phone, name=nome, status_conversa="Primeiro contato enviado"
-    )
+    # Nome do lead — vai para o campo de CADASTRO, nunca para o de nome
+    # confirmado: ele preencheu o formulario da origem (Lead Ads), mas ainda nao
+    # disse nesta conversa como quer ser chamado. Ver app/services/nomes.py, e o
+    # mesmo tratamento em followups/lead_dispatch.py.
+    #
+    # Grava nas DUAS variantes do numero, pelo mesmo motivo do historico acima:
+    # o consumer resolve o nome com `get_lead(phone)` usando o telefone que veio
+    # no JID da UAZAPI, que em muitos numeros chega SEM o 9o digito. Gravando so
+    # a forma canonica, o lead responde, o consumer nao acha o cadastro, o
+    # prompt recebe "NOME CONFIRMADO: (vazio)" e o bot PERGUNTA o nome que a
+    # pessoa acabou de escrever no formulario.
+    for v in variants:
+        if not await redis_service.get_lead(v):
+            await redis_service.create_lead(v)
+        await redis_service.update_lead(
+            v, name_cadastro=nome, status_conversa="Primeiro contato enviado"
+        )
+        await db.upsert_lead(v, nome_cadastro=nome)
 
     # Entra na regua de follow-up igual ao disparo local (lead_dispatch): quem
     # foi disparado pelo motor do SAI e nunca respondeu ficava fora da
