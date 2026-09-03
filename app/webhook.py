@@ -123,19 +123,28 @@ async def webhook(request: Request):
 
     # Detecta tipo e conteudo da mensagem
     text = _normalize_text(msg.get("text", ""))
-    msg_type_raw = msg.get("messageType", "")
+    # A UAZAPI manda messageType em PascalCase ("AudioMessage", "ImageMessage"),
+    # nao em camelCase minusculo. Comparar sem normalizar caixa faz TODO audio
+    # e imagem cair em "Unknown" e ser descartado em silencio (nem resposta,
+    # nem fila, nem log de erro visivel) — foi o caso de uma nota de voz que a
+    # dra-milena-catani ignorou em 03/09/2026 (mesmo bug deste template).
+    msg_type_raw = (msg.get("messageType") or "").lower()
+    content = msg.get("content") if isinstance(msg.get("content"), dict) else {}
 
     if text:
         msg_type = "Conversation"
         media_url = ""
         caption = ""
-    elif msg_type_raw == "audioMessage" or "audioMessage" in msg:
+    elif msg_type_raw == "audiomessage" or "audioMessage" in msg:
         msg_type = "AudioMessage"
-        media_url = msg.get("mediaUrl") or msg.get("url", "")
+        # Audio "normal" costuma vir com mediaUrl/url no topo; nota de voz
+        # (PTT) so tem o link criptografado em content.URL. Sem esse fallback
+        # o tipo era reconhecido mas o download falhava sem media_url.
+        media_url = msg.get("mediaUrl") or msg.get("url") or content.get("URL", "")
         caption = ""
-    elif msg_type_raw == "imageMessage" or "imageMessage" in msg:
+    elif msg_type_raw == "imagemessage" or "imageMessage" in msg:
         msg_type = "ImageMessage"
-        media_url = msg.get("mediaUrl") or msg.get("url", "")
+        media_url = msg.get("mediaUrl") or msg.get("url") or content.get("URL", "")
         caption = msg.get("caption", "")
     else:
         msg_type = "Unknown"
