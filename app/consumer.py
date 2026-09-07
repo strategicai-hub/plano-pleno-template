@@ -646,6 +646,24 @@ async def _alert_delivery_failure(
         logger.warning("Nao foi possivel avisar a equipe por WhatsApp: %s", alert_error)
 
 
+async def _marcar_encaminhado(phone: str) -> None:
+    """Registra o handoff no estado durável — o follow-up para de cobrar o lead.
+
+    Sem isto o handoff só notificava a equipe e o lead continuava na régua: em
+    produção um lead entregue ao corretor recebeu a reativação de 48h ("teria
+    ocorrido algum imprevisto?") dois dias depois. Depois da transferência quem
+    deve dar o próximo passo é a equipe, não o lead.
+
+    Só é chamado quando o aviso saiu de fato. Se ninguém soube do lead, a régua
+    continua sendo a rede de segurança dele.
+    """
+    try:
+        await db.mark_encaminhado(lead_intake.phone_variants(phone), phone)
+        await rds.update_lead(phone, status_conversa="Encaminhado")
+    except Exception:
+        logger.exception("Erro ao marcar %s como encaminhado", phone)
+
+
 async def _maybe_send_alert(phone: str, lead: dict, user_msg: str) -> None:
     """Envia alerta de atendimento humano. Chamada apenas quando a IA emite [TRANSFERIR=1].
 
@@ -655,6 +673,14 @@ async def _maybe_send_alert(phone: str, lead: dict, user_msg: str) -> None:
     if not settings.ALERT_PHONE:
         log(_warn(f"[TOOL ALERTA_EQUIPE] Nao acionado - ALERT_PHONE nao configurado"))
         return
+
+    # Guarda duravel: um lead, um aviso. O cooldown do Redis abaixo e curto e
+    # gravado no telefone exato — nao segura um segundo handoff horas depois, nem
+    # enxerga a outra forma do numero. `is_encaminhado` olha as duas e nao expira.
+    if await db.is_encaminhado(lead_intake.phone_variants(phone)):
+        log(f"[TOOL ALERTA_EQUIPE] Ignorado - equipe ja assumiu o lead {phone}")
+        return
+
     if await rds.is_alert_sent(phone):
         log(f"[TOOL ALERTA_EQUIPE] Ignorado - alerta ja enviado recentemente para {phone}")
         return
@@ -682,6 +708,7 @@ async def _maybe_send_alert(phone: str, lead: dict, user_msg: str) -> None:
     try:
         await uazapi.send_text(settings.ALERT_PHONE, alert_text)
         await rds.set_alert_sent(phone)
+        await _marcar_encaminhado(phone)
         log(_ok(f"[TOOL ALERTA_EQUIPE] Resultado: SUCESSO - equipe notificada sobre {phone}"))
     except Exception as e:
         log(_err(f"[TOOL ALERTA_EQUIPE] Resultado: FALHA - {e}"))

@@ -375,7 +375,59 @@ async def unmute_followups(phones: Iterable[str]) -> None:
         await db.commit()
 
 
+async def mark_encaminhado(phones: Iterable[str], primary: str) -> None:
+    """Marca que a equipe humana assumiu o atendimento — a régua de follow-up
+    para aqui.
+
+    Depois do handoff quem deve falar é a equipe. Cobrar resposta do lead ("você
+    sumiu?") nesse ponto é cobrar a pessoa errada: em produção um lead entregue
+    ao corretor recebeu a reativação de 48h como se tivesse abandonado a
+    conversa.
+
+    'encaminhado' fica de fora de `get_followups_due` e do seed da reativação, e
+    `touch_last_message` preserva o valor — então nem uma resposta tardia do lead
+    o traz de volta para a régua. `schedule_followup` também recusa reagendar
+    quem está assim.
+
+    Zera `next_follow_up`/`stage_follow_up` para não deixar agendamento pendente
+    e aplica nas duas variantes do número (com/sem o 9º dígito), porque a
+    reativação semeia as duas — foi por isso que a mesma cobrança saiu duas vezes
+    para o mesmo lead. Nunca cria linha para variante inexistente.
+    """
+    for variant in phones:
+        if variant != primary and not await get_lead(variant):
+            continue
+        await upsert_lead(
+            variant,
+            status_conversa="encaminhado",
+            next_follow_up=None,
+            stage_follow_up=0,
+        )
+
+
+async def is_encaminhado(phones: Iterable[str]) -> bool:
+    """True se a equipe já assumiu este lead — em qualquer forma do número.
+
+    Marcador DURÁVEL do handoff, e por isso a trava definitiva contra avisar a
+    equipe duas vezes do mesmo lead. A trava antiga era só o cooldown no Redis
+    (`ALERT_COOLDOWN_SECONDS`) gravado no telefone exato — curto demais e cego
+    para a outra variante do número.
+    """
+    for variant in phones:
+        lead = await get_lead(variant)
+        if lead and (lead.get("status_conversa") or "") == "encaminhado":
+            return True
+    return False
+
+
 async def schedule_followup(phone: str, next_follow_up_iso: str, stage: int = 1) -> None:
+    # 'encaminhado' é terminal: a equipe assumiu e a régua não volta a cobrar o
+    # lead. Sem esta guarda qualquer reagendamento (retry da reativação, ponte do
+    # disparo) rebaixaria o status para 'em_andamento' e devolveria o lead já
+    # entregue para a fila.
+    lead = await get_lead(phone)
+    if lead and (lead.get("status_conversa") or "") == "encaminhado":
+        return
     await upsert_lead(
         phone,
         next_follow_up=next_follow_up_iso,
@@ -392,7 +444,10 @@ async def get_followups_due(now_iso: str) -> list[dict]:
     Exclui também quem está sob `followup_hold_at` (atendente humano na
     conversa) sem ter voltado a escrever: o `modo_mudo` sozinho não bastava,
     porque uma linha já agendada ANTES do atendimento humano sobrevivia a
-    qualquer limpeza posterior da flag."""
+    qualquer limpeza posterior da flag.
+
+    'encaminhado' fica de fora pelo mesmo motivo: a equipe já assumiu a conversa
+    e quem deve dar o próximo passo é ela, não o lead."""
     async with aiosqlite.connect(settings.SQLITE_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
@@ -400,7 +455,8 @@ async def get_followups_due(now_iso: str) -> list[dict]:
             SELECT l.* FROM leads l
             WHERE l.next_follow_up IS NOT NULL
               AND l.next_follow_up <= ?
-              AND COALESCE(l.status_conversa, '') NOT IN ('finalizado', 'agendado')
+              AND COALESCE(l.status_conversa, '') NOT IN
+                  ('finalizado', 'agendado', 'encaminhado')
               AND COALESCE(l.modo_mudo, 0) = 0
               {FOLLOWUP_HOLD_CLAUSE}
               AND NOT EXISTS (
@@ -444,6 +500,33 @@ async def advance_followup_stage(
         fields["status_conversa"] = "finalizado"
         fields["next_follow_up"] = None
     await upsert_lead(phone, **fields)
+
+
+async def advance_followup_stage_variants(
+    phones: Iterable[str],
+    primary: str,
+    new_stage: int,
+    next_iso: Optional[str],
+    finalize: bool,
+) -> None:
+    """Avança o estágio no número que recebeu o envio e desarma as variantes.
+
+    O número tem linha com e sem o 9º dígito e as duas podem estar agendadas ao
+    mesmo tempo. Avançar só a que disparou deixava a irmã devida, e ela repetia a
+    MESMA cobrança no ciclo seguinte — observado em produção: dois textos quase
+    iguais, 15 minutos um do outro, saídos do mesmo template.
+
+    A irmã não ganha agendamento novo: quem carrega a régua daqui para frente é a
+    linha que enviou. Nunca cria linha para variante inexistente.
+    """
+    await advance_followup_stage(primary, new_stage, next_iso, finalize)
+    for variant in phones:
+        if variant == primary or not await get_lead(variant):
+            continue
+        fields = {"stage_follow_up": new_stage, "next_follow_up": None}
+        if finalize:
+            fields["status_conversa"] = "finalizado"
+        await upsert_lead(variant, **fields)
 
 
 async def mark_finalizado(phone: str) -> None:

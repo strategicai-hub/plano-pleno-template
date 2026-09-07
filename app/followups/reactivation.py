@@ -35,7 +35,7 @@ from app import db
 from app.client_data import load_client_data
 from app.config import settings
 from app.followups import templates
-from app.services import nomes, redis_service as rds, sai_sync, uazapi
+from app.services import lead_intake, nomes, redis_service as rds, sai_sync, uazapi
 from app.services.gemini import generate_reactivation_message, vary_message
 
 logger = logging.getLogger("followup.reactivation")
@@ -47,6 +47,33 @@ RECONCILE_MAX_AGE_SECONDS = 45 * 60
 
 TRACK_NO_REPLY = "no_reply"
 TRACK_STALLED = "stalled"
+
+# Status que tiram o lead da regua de reativacao. 'encaminhado' entrou aqui
+# porque a equipe ja assumiu a conversa: cobrar resposta depois do handoff e
+# cobrar a pessoa errada — quem deve dar o proximo passo e a equipe.
+STATUS_FORA_DA_REGUA = ("finalizado", "agendado", "encaminhado")
+
+
+async def _variante_em_conflito(phone: str) -> bool:
+    """True se alguma forma do numero (com/sem o 9o digito) ja saiu da regua.
+
+    O mesmo celular tem duas linhas no banco e `touch_last_message` preenche
+    `last_customer_message_at` nas duas — sem esta checagem as duas eram
+    semeadas no mesmo ciclo e o lead recebia a MESMA cobranca duas vezes, com
+    minutos de diferenca e o texto so reescrito pela IA. Basta uma variante
+    estar agendada, muda ou fora da regua para o grupo inteiro ficar de fora.
+    """
+    for variant in lead_intake.phone_variants(phone):
+        outro = await db.get_lead(variant)
+        if not outro:
+            continue
+        if outro.get("next_follow_up"):
+            return True
+        if int(outro.get("modo_mudo") or 0) == 1:
+            return True
+        if (outro.get("status_conversa") or "") in STATUS_FORA_DA_REGUA:
+            return True
+    return False
 
 
 def _cfg() -> dict:
@@ -88,6 +115,13 @@ async def _seed_inactive_leads(now_tz: datetime, inactive_hours: int) -> None:
     So alimenta a trilha `stalled`: o filtro exige `last_customer_message_at`
     preenchido. Quem nunca respondeu entra na trilha `no_reply` pelo agendamento
     feito no disparo do 1o contato.
+
+    Dedup por variante: o numero tem linha com e sem o 9o digito e
+    `touch_last_message` preenche `last_customer_message_at` nas duas. Sem dedup
+    as duas ficavam devidas e o lead levava a MESMA cobranca em ciclos seguidos,
+    com texto so reescrito pela IA — o que soa exatamente como robo. Dentro do
+    grupo vence a linha que falou por ultimo: e a que tem o historico da
+    conversa, que e o insumo do texto do follow-up.
     """
     now_utc = now_tz.astimezone(timezone.utc)
     cutoff = (now_utc - timedelta(hours=inactive_hours)).isoformat()
@@ -98,11 +132,12 @@ async def _seed_inactive_leads(now_tz: datetime, inactive_hours: int) -> None:
         conn.row_factory = aiosqlite.Row
         cur = await conn.execute(
             f"""
-            SELECT l.phone FROM leads l
+            SELECT l.phone, l.last_customer_message_at FROM leads l
             WHERE l.next_follow_up IS NULL
               AND l.last_customer_message_at IS NOT NULL
               AND l.last_customer_message_at <= ?
-              AND COALESCE(l.status_conversa, '') NOT IN ('finalizado', 'agendado')
+              AND COALESCE(l.status_conversa, '') NOT IN
+                  ('finalizado', 'agendado', 'encaminhado')
               AND COALESCE(l.modo_mudo, 0) = 0
               AND COALESCE(l.stage_follow_up, 0) = 0
               {db.FOLLOWUP_HOLD_CLAUSE}
@@ -117,14 +152,28 @@ async def _seed_inactive_leads(now_tz: datetime, inactive_hours: int) -> None:
         )
         rows = await cur.fetchall()
 
+    if not rows:
+        return
+
+    # Uma entrada por numero real: a variante que respondeu mais recentemente
+    # (empate resolvido pela forma mais longa, a canonica do disparo).
+    escolhidos: dict[str, tuple[str, str]] = {}
     for row in rows:
-        await db.schedule_followup(
-            row["phone"],
-            next_follow_up_iso=now_utc.isoformat(),
-            stage=1,
-        )
-    if rows:
-        logger.info("reactivation: %d lead(s) sementeados para reativacao", len(rows))
+        phone = row["phone"]
+        visto = row["last_customer_message_at"] or ""
+        chave = min(lead_intake.phone_variants(phone))
+        atual = escolhidos.get(chave)
+        if atual is None or (visto, len(phone)) > (atual[1], len(atual[0])):
+            escolhidos[chave] = (phone, visto)
+
+    semeados = 0
+    for phone, _ in escolhidos.values():
+        if await _variante_em_conflito(phone):
+            continue
+        await db.schedule_followup(phone, next_follow_up_iso=now_iso, stage=1)
+        semeados += 1
+    if semeados:
+        logger.info("reactivation: %d lead(s) sementeados para reativacao", semeados)
 
 
 async def _sai_state_is_fresh() -> bool:
@@ -290,7 +339,12 @@ async def run() -> None:
         if not finalize:
             next_iso = (now_tz + timedelta(hours=interval_hours))                 .astimezone(timezone.utc).isoformat()
 
-        await db.advance_followup_stage(phone, new_stage, next_iso, finalize)
+        # Avanca tambem as variantes do numero: se as duas formas (com/sem o 9o
+        # digito) chegaram a ficar agendadas, a irma sai da fila junto e nao
+        # repete a cobranca no ciclo seguinte.
+        await db.advance_followup_stage_variants(
+            lead_intake.phone_variants(phone), phone, new_stage, next_iso, finalize,
+        )
         await rds.release_followup_lock(phone)
         # Texto no log de proposito: a mensagem e gerada na hora e nao fica
         # gravada em lugar nenhum — sem isso nao da para auditar o que o bot
