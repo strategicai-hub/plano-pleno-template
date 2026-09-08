@@ -14,6 +14,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from dateutil.easter import easter
 from jinja2 import Environment, FileSystemLoader
 
 from app.client_data import load_client_data
@@ -21,6 +22,44 @@ from app.services import sai_sync
 
 DEFAULT_NICHE = "generico"
 _SP_TZ = ZoneInfo("America/Sao_Paulo")
+
+_WEEKDAY_NAMES = (
+    "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
+    "sexta-feira", "sábado", "domingo",
+)
+
+# Feriados nacionais de data fixa (Lei 662/1949, 6.802/1980, 10.607/2002 e
+# 14.759/2024, que tornou a Consciencia Negra feriado nacional).
+_FIXED_HOLIDAYS: tuple[tuple[tuple[int, int], str], ...] = (
+    ((1, 1), "Confraternização Universal (Ano Novo)"),
+    ((4, 21), "Tiradentes"),
+    ((5, 1), "Dia do Trabalho"),
+    ((9, 7), "Independência do Brasil"),
+    ((10, 12), "Nossa Senhora Aparecida"),
+    ((11, 2), "Finados"),
+    ((11, 15), "Proclamação da República"),
+    ((11, 20), "Dia Nacional de Zumbi e da Consciência Negra"),
+    ((12, 25), "Natal"),
+)
+
+# Feriados/pontos facultativos moveis, contados a partir do domingo de Pascoa.
+_EASTER_OFFSETS: tuple[tuple[int, str], ...] = (
+    (-48, "Carnaval (segunda-feira)"),
+    (-47, "Carnaval (terça-feira)"),
+    (-46, "Quarta-feira de Cinzas"),
+    (-2, "Sexta-feira Santa (Paixão de Cristo)"),
+    (0, "Domingo de Páscoa"),
+    (60, "Corpus Christi"),
+)
+
+
+def _brazil_holidays(year: int) -> dict[date, str]:
+    """Feriados nacionais do Brasil no ano (fixos + moveis pela Pascoa)."""
+    holidays = {date(year, m, d): name for (m, d), name in _FIXED_HOLIDAYS}
+    easter_sunday = easter(year)
+    for offset, name in _EASTER_OFFSETS:
+        holidays[easter_sunday + timedelta(days=offset)] = name
+    return holidays
 
 
 def _compute_time_greeting() -> str:
@@ -141,6 +180,105 @@ def _merge_sai_snapshot(data: dict) -> dict:
     return data
 
 
+def _compute_no_invention_block() -> str:
+    """Trava anti-invencao, valida para TODO nicho.
+
+    Motivada por incidente real (Portal Fitbox, 07/09/2026): em feriado, o bot
+    afirmou a um contato perdido na rua que um colaborador estava a caminho da
+    entrada para recebe-lo. Nada disso existia - a pessoa ficou esperando.
+    """
+    return (
+        "\n\n---\n\n## NUNCA PROMETA AÇÃO DE PESSOAS - TRAVA ABSOLUTA\n"
+        "Você é um sistema de mensagens. Você NÃO enxerga o local, NÃO sabe quem "
+        "está lá, NÃO consegue fazer ninguém sair do lugar e NÃO sabe quanto tempo "
+        "alguém demora. PROIBIDO afirmar o que uma pessoa está fazendo ou vai "
+        "fazer no mundo físico.\n\n"
+        "- PROIBIDO dizer que alguém (colaborador, atendente, recepção, corretor, "
+        "professor, responsável) \"está a caminho\", \"já está indo\", \"vai te "
+        "receber na entrada\", \"está te esperando\", \"saiu para te buscar\" ou "
+        "\"vai até aí\".\n"
+        "- PROIBIDO prometer que alguém vai até a rua, portão, portaria, "
+        "estacionamento, recepção ou qualquer ponto de encontro.\n"
+        "- PROIBIDO dizer \"acionei a equipe agora\", \"mandei alguém\", \"já pedi "
+        "para alguém ir\" como se fosse uma ação física executada por você.\n"
+        "- PROIBIDO afirmar que tem alguém disponível neste instante, que estão "
+        "atendendo agora ou que o retorno será imediato.\n"
+        "- VOCABULÁRIO DO ENCAMINHAMENTO: a equipe responde POR MENSAGEM, não vai "
+        "ao encontro de ninguém. Termine em \"te orientar por aqui\", \"te responder "
+        "por aqui\" ou equivalente. PROIBIDO emendar verbo de deslocamento ou "
+        "encontro presencial:\n"
+        "    ERRADO: \"a equipe te orienta e te encontra\" / \"vão te achar aí\" / "
+        "\"alguém vai até você\"\n"
+        "    CERTO: \"a equipe te orienta por aqui\" / \"a equipe te responde por aqui\"\n"
+        "- PROIBIDO descrever a posição do local em relação a onde o contato diz "
+        "estar (\"um pouco mais adiante\", \"logo depois\", \"do outro lado da rua\", "
+        "\"a duas quadras\", \"é só seguir reto\"). Você não sabe onde ele está nem "
+        "o trajeto — isso é invenção. Repita o endereço EXATO da base e pare aí.\n"
+        "- FORA DO HORÁRIO DE FUNCIONAMENTO: PROIBIDO dizer que a equipe responde "
+        "\"agora\", \"em instantes\" ou \"já já\". Informe que no momento não há "
+        "expediente e que a equipe retorna no próximo horário.\n"
+        "- O que você PODE fazer: passar o que está escrito na base (endereço, "
+        "horário, referência) e registrar o contato para a equipe humana, deixando "
+        "claro que quem responde é a equipe.\n"
+    )
+
+
+def _compute_holidays_block(holiday_hours: str, horizon_days: int = 365) -> str:
+    """Bloco autoritativo de feriados nacionais + horario especial de feriado.
+
+    Sem `schedule.holiday_hours` no client.yaml -> string vazia (nao polui o
+    prompt e nao inventa horario para cliente que nao configurou a regra).
+    """
+    holiday_hours = (holiday_hours or "").strip()
+    if not holiday_hours:
+        return ""
+
+    today = datetime.now(_SP_TZ).date()
+    horizon = today + timedelta(days=horizon_days)
+    calendar: dict[date, str] = {}
+    for year in range(today.year, horizon.year + 1):
+        calendar.update(_brazil_holidays(year))
+
+    today_name = calendar.get(today)
+    if today_name:
+        today_line = (
+            f"- ATENÇÃO: HOJE ({today.strftime('%d/%m/%Y')}) É FERIADO — "
+            f"{today_name}. Hoje o atendimento é SOMENTE das {holiday_hours}."
+        )
+    else:
+        today_line = (
+            f"- HOJE ({today.strftime('%d/%m/%Y')}) NÃO é feriado nacional. "
+            "Vale o horário normal informado na base."
+        )
+
+    upcoming = [
+        f"  - {d.strftime('%d/%m/%Y')} ({_WEEKDAY_NAMES[d.weekday()]}) — {name}"
+        for d, name in sorted(calendar.items())
+        if today <= d <= horizon
+    ]
+
+    return (
+        "\n\n---\n\n## FERIADOS - REGRA ABSOLUTA\n"
+        f"Em feriado o atendimento é em HORÁRIO ESPECIAL: {holiday_hours}. "
+        "Não é o horário normal de dia útil, e também NÃO é dia fechado.\n\n"
+        f"{today_line}\n"
+        "- Fora dessa janela, no feriado, NÃO há expediente. PROIBIDO dizer que "
+        "a equipe vai atender \"agora\", que tem alguém no local ou que alguém vai "
+        "receber o contato. Informe que no momento não há expediente e que a "
+        "equipe responde no próximo horário de funcionamento.\n"
+        "- A agenda/grade normal NÃO vale em feriado. Se perguntarem se algo "
+        "específico acontece no feriado, você NÃO sabe: encaminhe para a equipe "
+        "com [TRANSFERIR=1]. PROIBIDO confirmar ou negar por conta própria.\n"
+        "- Se a data também aparecer na seção ## DATAS FECHADAS, aquela seção tem "
+        "PRECEDÊNCIA: naquele dia não há funcionamento nem em horário especial.\n"
+        "- PROIBIDO inventar feriado que não esteja na lista abaixo e PROIBIDO "
+        "dizer que uma data é feriado sem conferir aqui.\n\n"
+        "Feriados nacionais nos próximos 12 meses:\n"
+        + "\n".join(upcoming)
+        + "\n"
+    )
+
+
 def _compute_time_context_block() -> str:
     """Bloco autoritativo de data/hora atual em Sao Paulo.
 
@@ -259,10 +397,13 @@ def build_prompt() -> str:
         )
         template_file = f"{DEFAULT_NICHE}.j2"
     template = env.get_template(template_file)
+    holiday_hours = (data.get("schedule") or {}).get("holiday_hours") or ""
     return (
         template.render(**data)
         + _compute_mission_block(data)
+        + _compute_no_invention_block()
         + _compute_time_context_block()
+        + _compute_holidays_block(holiday_hours)
         + _compute_closed_days_block()
     )
 

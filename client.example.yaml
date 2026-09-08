@@ -43,6 +43,12 @@ audience:
 schedule:
   class_duration: "1 hora"
   class_note: "por agendamento, supervisionadas por professor especializado"
+  # Horario especial em feriado nacional. Se preenchido, o prompt ganha o bloco
+  # ## FERIADOS com a lista de feriados do Brasil (calculada em app/prompt.py,
+  # inclui os moveis: Carnaval, Sexta-feira Santa, Corpus Christi) mais a trava
+  # que impede o bot de confirmar atendimento ou agenda em feriado.
+  # Deixe ausente se o cliente nao tem regra especial de feriado.
+  holiday_hours: "09:00 as 13:00"
   weekdays:
     morning: ["5h", "6h", "7h", "8h", "9h", "10h"]
     afternoon: ["14h", "15h", "16h", "17h"]
