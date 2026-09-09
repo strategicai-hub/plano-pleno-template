@@ -25,6 +25,9 @@ from app.followups import templates as tpl
 CFG = {
     "enabled": True,
     "max_per_run": 20,
+    # Janela aberta: estes testes rodam a qualquer hora do dia (o horario de
+    # envio tem teste proprio em test_reactivation_janela.py).
+    "send_window": {"hours_start": "00:00", "hours_end": "23:59"},
     "no_reply": {"max_stages": 3, "interval_hours": 24},
     "stalled": {"inactive_hours": 48, "max_stages": 1, "interval_hours": 48},
 }
@@ -144,7 +147,10 @@ async def test_config_antiga_sem_trilhas_continua_funcionando(env, monkeypatch):
     """Cliente que ainda nao separou as trilhas mantem o comportamento de antes."""
     monkeypatch.setattr(
         react, "_cfg",
-        lambda: {"enabled": True, "inactive_hours": 24, "max_stages": 2},
+        lambda: {
+            "enabled": True, "inactive_hours": 24, "max_stages": 2,
+            "send_window": {"hours_start": "00:00", "hours_end": "23:59"},
+        },
     )
     monkeypatch.setattr(
         tpl, "_overrides",

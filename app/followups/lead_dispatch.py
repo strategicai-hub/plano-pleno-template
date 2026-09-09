@@ -35,6 +35,7 @@ from zoneinfo import ZoneInfo
 from app import db
 from app.client_data import load_client_data
 from app.config import settings
+from app.followups import cadence
 from app.followups import templates as fu_templates
 from app.services import lead_intake, nomes, redis_service as rds, sai_sync, uazapi
 from app.services.gemini import generate_first_contact_message, vary_message
@@ -357,13 +358,27 @@ async def _dispatch_one(item: dict, cfg: dict, now_tz: datetime) -> None:
     await db.upsert_lead(phone, nome_cadastro=nome)
 
     # Follow-up automatico se o lead nao responder: entra no ciclo da
-    # reativacao (stages 1..max_stages, 1/dia). Cancelado pelo consumer se o
-    # lead responder antes.
-    followup_after_hours = int(cfg.get("followup_after_hours", 24))
-    if followup_after_hours > 0:
-        next_iso = (now_tz + timedelta(hours=followup_after_hours)) \
-            .astimezone(timezone.utc).isoformat()
-        await db.schedule_followup(phone, next_follow_up_iso=next_iso, stage=1)
+    # reativacao (stages 1..max_stages). Cancelado pelo consumer se o lead
+    # responder antes.
+    #
+    # O instante deste envio vira a ANCORA da regua inteira: os estagios contam
+    # dele (`reactivation.no_reply.offsets_hours`), nao um do outro.
+    # `followup_after_hours` continua valendo para quem nao configurou offsets.
+    # Em qualquer dos dois casos o horario e empurrado para dentro da janela de
+    # envio — abertura as 15h agendaria o 1o follow-up as 03h.
+    react_cfg = cadence.reactivation_cfg()
+    track = cadence.track_cfg(react_cfg, "no_reply")
+    if not track.get("offsets_hours"):
+        track = {**track, "interval_hours": int(cfg.get("followup_after_hours", 24))}
+    if float(cadence.offset_horas(track, 1)) > 0:
+        proximo = cadence.proximo_envio(now_tz, 1, track, react_cfg)
+        await db.schedule_followup(
+            phone,
+            next_follow_up_iso=proximo.astimezone(timezone.utc).isoformat(),
+            stage=1,
+            anchor_iso=now_tz.astimezone(timezone.utc).isoformat(),
+        )
+        logger.info("[%s] 1o follow-up agendado para %s", phone, proximo.strftime("%d/%m %H:%M"))
 
     await rds.set_dispatch_gate(_spacing_seconds(cfg))
     logger.info("[%s] 1o contato enviado (nome=%s)", phone, nome or "-")

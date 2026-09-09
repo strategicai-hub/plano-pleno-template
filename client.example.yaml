@@ -274,14 +274,31 @@ followups:
                                  # Ao ligar a reativacao num bot com base acumulada,
                                  # todo o backlog fica devido no mesmo ciclo — o teto
                                  # faz escoar aos poucos e evita ban no WhatsApp.
+    # JANELA DE ENVIO — nenhum follow-up sai fora dela. O horario que cairia de
+    # madrugada e empurrado para a abertura seguinte somando ate `spread_minutes`
+    # de sorteio: sem o sorteio, tudo o que ficou represado durante a noite sairia
+    # junto as 08:00 em ponto, e rajada de mensagem proativa bloqueia o numero.
+    # Estes sao os valores padrao — declarar so para mudar.
+    # send_window:
+    #   hours_start: "08:00"
+    #   hours_end: "18:00"
+    #   spread_minutes: 60       # 08:00-09:00
     # OPCIONAL — duas reguas separadas. A trilha e escolhida por lead: quem nunca
     # respondeu cai em `no_reply` (relogio comeca no ENVIO do 1o contato, agendado
     # pelo lead_dispatch); quem respondeu e parou cai em `stalled` (relogio comeca
     # no ultimo retorno dele). Sem estes blocos, `inactive_hours`/`max_stages`
     # acima valem para as duas — o comportamento historico.
     # no_reply:
-    #   max_stages: 3            # ex.: 24h, 48h, 72h — o ultimo encerra o contato
-    #   interval_hours: 24
+    #   max_stages: 2
+    #   # Horas contadas do 1o CONTATO (nao do follow-up anterior): abertura as
+    #   # 15h -> estagio 1 as 03h, empurrado para 08:00-09:00; estagio 2 segue
+    #   # marcado para as 15h, porque conta da mesma ancora. Sem `offsets_hours`
+    #   # a regua volta a ser `interval_hours` a partir do envio anterior.
+    #   offsets_hours: [12, 24]
+    #   min_gap_hours: 6         # distancia minima entre dois follow-ups quando a
+    #                            # janela comprime a regua (ex.: abertura as 09h,
+    #                            # em que os dois estagios cairiam na mesma manha)
+    #   interval_hours: 12       # so usado se `offsets_hours` for removido
     # stalled:
     #   inactive_hours: 48       # horas desde o ultimo retorno do lead
     #   max_stages: 1            # uma unica retomada

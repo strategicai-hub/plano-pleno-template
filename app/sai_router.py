@@ -5,9 +5,11 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
+from zoneinfo import ZoneInfo
 
 from app import db
 from app.config import settings
+from app.followups import cadence
 from app.services import redis_service, lead_intake, phone_utils, sai_sync
 from app.client_data import load_client_data
 
@@ -365,11 +367,24 @@ async def dispatch_context(
     # foi disparado pelo motor do SAI e nunca respondeu ficava fora da
     # reativacao, porque `_seed_inactive_leads` so pega quem tem
     # last_customer_message_at preenchido.
+    #
+    # O envio da abertura (que aconteceu no SAI, agora) e a ANCORA da regua: os
+    # estagios contam dele, e o horario resultante e empurrado para dentro da
+    # janela de envio. Mesma conta do disparo local — ver followups/cadence.py.
     ld_cfg = (load_client_data() or {}).get("lead_dispatch") or {}
-    after_hours = int(ld_cfg.get("followup_after_hours", 24))
-    if after_hours > 0:
-        next_iso = (datetime.now(timezone.utc) + timedelta(hours=after_hours)).isoformat()
-        await db.schedule_followup(phone, next_follow_up_iso=next_iso, stage=1)
+    react_cfg = cadence.reactivation_cfg()
+    track = cadence.track_cfg(react_cfg, "no_reply")
+    if not track.get("offsets_hours"):
+        track = {**track, "interval_hours": int(ld_cfg.get("followup_after_hours", 24))}
+    if float(cadence.offset_horas(track, 1)) > 0:
+        agora = datetime.now(ZoneInfo(settings.SCHEDULER_TZ))
+        proximo = cadence.proximo_envio(agora, 1, track, react_cfg)
+        await db.schedule_followup(
+            phone,
+            next_follow_up_iso=proximo.astimezone(timezone.utc).isoformat(),
+            stage=1,
+            anchor_iso=agora.astimezone(timezone.utc).isoformat(),
+        )
 
     logger.info("sai_router: /dispatch-context semeou ATIVO rota=%s para %s", route, phone)
     return {"ok": True, "phone": phone, "route": route}

@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS leads (
   stage_follow_up INTEGER DEFAULT 0,
   last_customer_message_at TEXT,
   followup_hold_at TEXT,
+  followup_anchor_at TEXT,
   status_conversa TEXT DEFAULT 'novo',
   updated_at TEXT
 );
@@ -104,6 +105,12 @@ _MIGRATIONS = [
     # marca vive no SQLite e so cai quando o LEAD volta a escrever. Enquanto ela
     # for mais recente que a ultima mensagem do lead, nenhum follow-up sai.
     "ALTER TABLE leads ADD COLUMN followup_hold_at TEXT",
+    # Momento do ENVIO DA 1a MENSAGEM. E a ancora da regua de follow-up: os
+    # estagios contam a partir dela (`offsets_hours`), nao a partir do estagio
+    # anterior. Sem a ancora, todo atraso de um estagio (janela noturna, gate
+    # anti-ban, retry) empurrava o seguinte junto e a regua escorregava dia
+    # apos dia. Ver app/followups/cadence.py.
+    "ALTER TABLE leads ADD COLUMN followup_anchor_at TEXT",
 ]
 
 # Correcoes de DADOS (nao de schema), idempotentes por construcao — rodam junto
@@ -420,7 +427,19 @@ async def is_encaminhado(phones: Iterable[str]) -> bool:
     return False
 
 
-async def schedule_followup(phone: str, next_follow_up_iso: str, stage: int = 1) -> None:
+async def schedule_followup(
+    phone: str,
+    next_follow_up_iso: str,
+    stage: int = 1,
+    anchor_iso: Optional[str] = None,
+) -> None:
+    """Agenda o próximo follow-up do lead.
+
+    `anchor_iso` é o momento do 1º contato — informado por quem dispara a
+    abertura (lead_dispatch / ponte do SAI). A régua inteira conta a partir
+    dele, então ele só é gravado uma vez: reagendamentos posteriores (retry,
+    avanço de estágio) passam None e preservam a âncora original.
+    """
     # 'encaminhado' é terminal: a equipe assumiu e a régua não volta a cobrar o
     # lead. Sem esta guarda qualquer reagendamento (retry da reativação, ponte do
     # disparo) rebaixaria o status para 'em_andamento' e devolveria o lead já
@@ -428,12 +447,14 @@ async def schedule_followup(phone: str, next_follow_up_iso: str, stage: int = 1)
     lead = await get_lead(phone)
     if lead and (lead.get("status_conversa") or "") == "encaminhado":
         return
-    await upsert_lead(
-        phone,
-        next_follow_up=next_follow_up_iso,
-        stage_follow_up=stage,
-        status_conversa="em_andamento",
-    )
+    campos = {
+        "next_follow_up": next_follow_up_iso,
+        "stage_follow_up": stage,
+        "status_conversa": "em_andamento",
+    }
+    if anchor_iso:
+        campos["followup_anchor_at"] = anchor_iso
+    await upsert_lead(phone, **campos)
 
 
 async def get_followups_due(now_iso: str) -> list[dict]:

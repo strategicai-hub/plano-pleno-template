@@ -32,7 +32,11 @@ def env(monkeypatch):
 
         monkeypatch.setattr(
             react, "_cfg",
-            lambda: {"enabled": True, "inactive_hours": 24, "max_stages": 3},
+            lambda: {
+                "enabled": True, "inactive_hours": 24, "max_stages": 3,
+                # Janela aberta: o teste e sobre o vocativo, nao sobre o horario.
+                "send_window": {"hours_start": "00:00", "hours_end": "23:59"},
+            },
         )
         # Templates do cliente sob controle do teste (o client.yaml real do
         # projeto nao deve influenciar a trava de nome).

@@ -300,7 +300,9 @@ async def test_reativacao_pula_lead_com_assistente_desativado(fake, monkeypatch,
 
     monkeypatch.setattr(
         reactivation, "_cfg",
-        lambda: {"enabled": True, "inactive_hours": 24, "max_stages": 3, "max_per_run": 20},
+        lambda: {"enabled": True, "inactive_hours": 24, "max_stages": 3, "max_per_run": 20,
+                 # Janela aberta: o teste roda a qualquer hora e nao e sobre horario.
+                 "send_window": {"hours_start": "00:00", "hours_end": "23:59"}},
     )
 
     async def fake_seed(*_a, **_k):

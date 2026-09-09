@@ -8,7 +8,9 @@ estagio da trilha, finaliza.
 TRILHAS (a escolha e por lead, derivada de `last_customer_message_at`):
 
 - `no_reply`  — o lead NUNCA respondeu. O relogio comeca no ENVIO do 1o contato
-  (quem agenda o estagio 1 e o `lead_dispatch`, via `followup_after_hours`).
+  (quem agenda o estagio 1 e o `lead_dispatch`) e TODOS os estagios contam dessa
+  mesma ancora (`leads.followup_anchor_at`), nao do estagio anterior — ver
+  `followups/cadence.py`.
 - `stalled`   — o lead respondeu e parou. O relogio comeca no ultimo retorno
   dele. `_seed_inactive_leads` captura esses leads apos `inactive_hours`.
 
@@ -18,7 +20,13 @@ A transicao entre trilhas nao precisa de estado proprio: quando o lead responde,
 `stalled`.
 
 Cliente que nao declarar as trilhas em `followups.reactivation` continua no
-comportamento antigo (trilha unica): `_track_cfg` cai nos valores chapados.
+comportamento antigo (trilha unica): `_track_cfg` cai nos valores chapados. O
+mesmo vale para a cadencia: sem `offsets_hours`, a regua segue com
+`interval_hours` como sempre foi.
+
+JANELA: nenhum follow-up sai fora de `reactivation.send_window` (08:00-18:00 por
+padrao). O que cairia de madrugada e reagendado para a abertura seguinte, com
+sorteio de minutos (`spread_minutes`) para nao sair tudo as 08:00 em rajada.
 
 TEXTO: quando ha template do cliente (`followups.templates.<trilha>_stage_N`),
 ele e a fonte da mensagem e a IA so o reescreve com outras palavras
@@ -34,7 +42,7 @@ from zoneinfo import ZoneInfo
 from app import db
 from app.client_data import load_client_data
 from app.config import settings
-from app.followups import templates
+from app.followups import cadence, templates
 from app.services import lead_intake, nomes, redis_service as rds, sai_sync, uazapi
 from app.services.gemini import generate_reactivation_message, vary_message
 
@@ -82,20 +90,28 @@ def _cfg() -> dict:
 
 
 def _track_cfg(cfg: dict, track: str) -> dict:
-    """Config da trilha, com fallback para o formato antigo (trilha unica).
+    """Config da trilha, com fallback para o formato antigo (trilha unica)."""
+    return cadence.track_cfg(cfg, track)
 
-    Cliente que ainda nao separou as trilhas tem `inactive_hours`/`max_stages`
-    direto no bloco `reactivation` — esses valores continuam valendo para as
-    duas trilhas, e o comportamento fica igual ao de antes.
+
+def _ancora(lead: dict, stage: int, track_cfg: dict, now_tz: datetime) -> datetime:
+    """Momento do 1o contato deste lead, base de toda a regua.
+
+    Lead sem ancora gravada (disparado por uma versao anterior a esta, ou
+    semeado pela trilha `stalled`, que nasce da ultima fala do lead) nao tem como
+    saber quando a abertura saiu — assume-se que o estagio atual esta vencendo
+    agora, o que reconstroi a regua a partir daqui sem atropelar o lead.
     """
-    sub = cfg.get(track)
-    if isinstance(sub, dict) and sub:
-        return sub
-    return {
-        "inactive_hours": cfg.get("inactive_hours", 24),
-        "max_stages": cfg.get("max_stages", 3),
-        "interval_hours": cfg.get("interval_hours", 24),
-    }
+    raw = (lead.get("followup_anchor_at") or "").strip()
+    if raw:
+        try:
+            dt = datetime.fromisoformat(raw)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(ZoneInfo(settings.SCHEDULER_TZ))
+        except ValueError:
+            logger.warning("ancora invalida em %s: %r", lead.get("phone"), raw)
+    return now_tz - timedelta(hours=cadence.offset_horas(track_cfg, stage))
 
 
 def _track_for(lead: dict) -> str:
@@ -275,7 +291,6 @@ async def run() -> None:
         track = _track_for(lead)
         track_cfg = _track_cfg(cfg, track)
         max_stages = int(track_cfg.get("max_stages", 3))
-        interval_hours = int(track_cfg.get("interval_hours", 24))
 
         if stage > max_stages:
             await db.mark_finalizado(phone)
@@ -293,6 +308,21 @@ async def run() -> None:
             motivo = "assistente desativado no SAI" if await rds.is_permanently_blocked(phone) \
                 else "humano assumiu"
             logger.info("[%s] bloqueado (%s) — reativacao adiada", phone, motivo)
+            continue
+
+        # Janela de envio: follow-up nao sai de madrugada. Fora dela o lead e
+        # empurrado para a proxima abertura (com sorteio de minutos) em vez de
+        # receber a mensagem agora. Pega tambem os leads que ficaram agendados
+        # pela regra antiga, de horas corridas a partir do disparo.
+        if not cadence.dentro_da_janela(now_tz, cfg):
+            quando = cadence.ajustar_para_janela(now_tz, cfg)
+            await db.schedule_followup(
+                phone,
+                next_follow_up_iso=quando.astimezone(timezone.utc).isoformat(),
+                stage=stage,
+            )
+            logger.info("[%s] fora da janela de envio — follow-up adiado para %s",
+                        phone, quando.strftime("%d/%m %H:%M"))
             continue
 
         # Trava distribuida: impede que duas execucoes concorrentes do
@@ -337,7 +367,16 @@ async def run() -> None:
         new_stage = stage + 1 if not finalize else max_stages
         next_iso = None
         if not finalize:
-            next_iso = (now_tz + timedelta(hours=interval_hours))                 .astimezone(timezone.utc).isoformat()
+            # Proximo estagio ancorado no 1o contato (+12h, +24h... conforme
+            # `offsets_hours`), dentro da janela e nunca colado no envio de agora
+            # (`min_gap_hours`). Sem `offsets_hours` a conta cai em
+            # `interval_hours * estagio`, que e o comportamento de sempre.
+            ancora = _ancora(lead, stage, track_cfg, now_tz)
+            proximo = cadence.proximo_envio(
+                ancora, stage + 1, track_cfg, cfg,
+                piso=cadence.piso_por_gap(now_tz, track_cfg),
+            )
+            next_iso = proximo.astimezone(timezone.utc).isoformat()
 
         # Avanca tambem as variantes do numero: se as duas formas (com/sem o 9o
         # digito) chegaram a ficar agendadas, a irma sai da fila junto e nao
