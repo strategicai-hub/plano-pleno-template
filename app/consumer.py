@@ -78,6 +78,62 @@ def _strip_html(text: str) -> str:
     return re.sub(r"<[^>]+>", "", text)
 
 
+# ---- download de midia (audio / imagem) ----
+
+# URL de midia CRIPTOGRAFADA do WhatsApp. Nota de voz (PTT) so traz esse link no
+# webhook (`content.URL`): baixar dele devolve HTTP 200 com o blob `.enc`, que
+# nao e audio — o Gemini recusa com "400 INVALID_ARGUMENT" e o lead ouvia o bot
+# dizer que "nao conseguiu identificar o audio". Quem decifra e a UAZAPI, pelo
+# id da mensagem (/message/download).
+_ENC_MEDIA_RE = re.compile(r"\.enc(\?|$)|mmg\.whatsapp\.net", re.IGNORECASE)
+
+# Texto injetado no lugar da transcricao/descricao quando a midia nao chega.
+# NAO e um relato do erro para o lead: e uma instrucao para a IA. O bot ouve
+# audio e le imagem — dizer o contrario ao lead passa a impressao de que o
+# atendimento e limitado, e ja aconteceu em producao (10/09/2026).
+_MEDIA_FALHOU_AUDIO = (
+    "[CONTEXTO DO SISTEMA: o audio do lead nao chegou completo (falha de "
+    "download do WhatsApp, nao e limitacao sua). E PROIBIDO dizer que voce "
+    "'nao conseguiu identificar/entender o audio' ou que nao ouve audios. "
+    "Peca o reenvio com naturalidade, em UMA frase curta, tipo 'Acho que o "
+    "audio chegou cortado aqui, pode mandar de novo?']"
+)
+_MEDIA_FALHOU_IMAGEM = (
+    "[CONTEXTO DO SISTEMA: a imagem do lead nao chegou completa (falha de "
+    "download do WhatsApp, nao e limitacao sua). E PROIBIDO dizer que voce "
+    "'nao conseguiu ver/abrir a imagem' ou que nao enxerga imagens. Peca o "
+    "reenvio com naturalidade, em UMA frase curta, tipo 'Acho que a foto "
+    "chegou cortada aqui, pode mandar de novo?']"
+)
+
+
+async def _fetch_media_bytes(media_url: str, message_id: str) -> bytes | None:
+    """Bytes utilizaveis da midia recebida, ou None se nao houver de onde baixar.
+
+    Ordem: URL direta da UAZAPI (quando ela existe e nao e o blob criptografado)
+    -> /message/download pelo id. Se um caminho falhar, tenta o outro antes de
+    desistir.
+    """
+    url_direta = bool(media_url) and not _ENC_MEDIA_RE.search(media_url)
+    if url_direta:
+        try:
+            return await uazapi.download_media(media_url)
+        except Exception as e:
+            log(_warn(f"[MEDIA] download direto falhou ({e}) - tentando por id"))
+    if message_id:
+        try:
+            return await uazapi.download_media_by_id(message_id)
+        except Exception as e:
+            log(_warn(f"[MEDIA] download por id falhou ({e})"))
+            if url_direta or not media_url:
+                raise
+    if media_url and not url_direta:
+        # So resta o link criptografado: tenta mesmo assim (melhor que nada em
+        # instancia antiga, onde a URL do topo ja vem decifrada).
+        return await uazapi.download_media(media_url)
+    return None
+
+
 
 def _is_reset_confirmation(text: str) -> bool:
     normalized = " ".join((text or "").split()).casefold().rstrip(".!")
@@ -417,36 +473,36 @@ async def _process_message(msg: dict) -> None:
     elif msg_type == "AudioMessage":
         log(f"[TOOL AUDIO] Executando transcribe_audio(phone={phone})")
         try:
-            if media_url:
-                audio_bytes = await uazapi.download_media(media_url)
+            audio_bytes = await _fetch_media_bytes(media_url, message_id)
+            if audio_bytes:
                 transcription = await transcribe_audio(audio_bytes)
                 buffer_text = f"[Audio transcrito]: {transcription}"
                 log(_ok(f"[TOOL AUDIO] Resultado: SUCESSO - audio transcrito para {phone}"))
             else:
-                buffer_text = "[Audio recebido - nao foi possivel transcrever]"
-                log(_warn(f"[TOOL AUDIO] Resultado: FALHA - sem media_url para {phone}"))
+                buffer_text = _MEDIA_FALHOU_AUDIO
+                log(_warn(f"[TOOL AUDIO] Resultado: FALHA - sem media_url nem message_id para {phone}"))
         except Exception as e:
             log(_err(f"[TOOL AUDIO] Resultado: EXCECAO - {e}"))
             logger.exception("Erro ao transcrever audio")
-            buffer_text = "[Audio recebido - erro na transcricao]"
+            buffer_text = _MEDIA_FALHOU_AUDIO
     elif msg_type == "ImageMessage":
         log(f"[TOOL IMAGEM] Executando analyze_image(phone={phone})")
         try:
             caption = msg.get("caption", "")
-            if media_url:
-                image_bytes = await uazapi.download_media(media_url)
+            image_bytes = await _fetch_media_bytes(media_url, message_id)
+            if image_bytes:
                 description = await analyze_image(image_bytes)
                 buffer_text = f"[Imagem recebida]: {description}"
                 if caption:
                     buffer_text += f"\nLegenda: {caption}"
                 log(_ok(f"[TOOL IMAGEM] Resultado: SUCESSO - imagem analisada para {phone}"))
             else:
-                buffer_text = "[Imagem recebida - nao foi possivel analisar]"
-                log(_warn(f"[TOOL IMAGEM] Resultado: FALHA - sem media_url para {phone}"))
+                buffer_text = _MEDIA_FALHOU_IMAGEM
+                log(_warn(f"[TOOL IMAGEM] Resultado: FALHA - sem media_url nem message_id para {phone}"))
         except Exception as e:
             log(_err(f"[TOOL IMAGEM] Resultado: EXCECAO - {e}"))
             logger.exception("Erro ao analisar imagem")
-            buffer_text = "[Imagem recebida - erro na analise]"
+            buffer_text = _MEDIA_FALHOU_IMAGEM
     else:
         buffer_text = msg_text or f"[Mensagem do tipo {msg_type} recebida]"
 

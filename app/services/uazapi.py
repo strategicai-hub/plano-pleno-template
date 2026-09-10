@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json as _json
 import logging
 
@@ -234,3 +235,31 @@ async def download_media(media_url: str) -> bytes:
     resp = await client.get(media_url, headers=_headers())
     resp.raise_for_status()
     return resp.content
+
+
+async def download_media_by_id(message_id: str) -> bytes:
+    """Baixa a midia JA DESCRIPTOGRAFADA, pedindo a UAZAPI pelo id da mensagem.
+
+    Nota de voz (PTT) chega no webhook so com `content.URL`, que aponta para o
+    blob `.enc` em mmg.whatsapp.net. Esse arquivo e o audio CRIPTOGRAFADO: o GET
+    devolve HTTP 200 e bytes que nao sao audio nenhum, e o Gemini recusa com
+    "400 INVALID_ARGUMENT" — o lead ouvia "nao consegui identificar o audio".
+    Quem tem o mediaKey para decifrar e a UAZAPI, via /message/download.
+    """
+    url = f"{settings.UAZAPI_BASE_URL}/message/download"
+    payload = {"id": message_id, "return_base64": "true"}
+    client = _get_client()
+    resp = await client.post(url, content=_json_body(payload), headers=_headers())
+    resp.raise_for_status()
+    data = resp.json() or {}
+    b64 = data.get("base64Data") or ""
+    if "," in b64:  # pode vir como data URI ("data:audio/ogg;base64,....")
+        b64 = b64.split(",", 1)[1]
+    if b64:
+        return base64.b64decode(b64)
+    file_url = data.get("fileURL") or ""
+    if file_url:
+        r = await client.get(file_url, headers=_headers())
+        r.raise_for_status()
+        return r.content
+    raise RuntimeError(f"resposta sem base64Data nem fileURL: keys={list(data.keys())}")
